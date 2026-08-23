@@ -2785,6 +2785,99 @@ end:
 	pthread_mutex_unlock(&g_devlist_mutex);
 }
 
+struct spdk_io_channel_call {
+	void *io_device;
+	spdk_channel_msg_fn fn;
+	void *ctx;
+};
+
+static void
+_io_channel_send_msg(void *ctx)
+{
+	struct spdk_io_channel_call *c = ctx;
+	struct io_device *dev;
+	struct spdk_io_channel *ch;
+
+	pthread_mutex_lock(&g_devlist_mutex);
+	dev = io_device_get(c->io_device);
+	pthread_mutex_unlock(&g_devlist_mutex);
+
+	if (dev == NULL) {
+		SPDK_DEBUGLOG(thread, "io_device %p was unregistered before message reached.\n",
+			      c->io_device);
+		free(c);
+		return;
+	}
+
+	ch = thread_get_io_channel(spdk_get_thread(), dev);
+	if (ch != NULL) {
+		c->fn(ch, c->ctx);
+	} else {
+		SPDK_DEBUGLOG(thread, "io_channel was removed before message reached.\n");
+	}
+	free(c);
+}
+
+void
+spdk_io_channel_send_msg(struct spdk_thread *thread, void *io_device,
+			 spdk_channel_msg_fn fn, void *ctx)
+{
+	struct spdk_io_channel_call *c;
+	struct io_device *dev;
+	int rc;
+
+	pthread_mutex_lock(&g_devlist_mutex);
+	dev = io_device_get(io_device);
+	pthread_mutex_unlock(&g_devlist_mutex);
+
+	if (dev == NULL) {
+		SPDK_ERRLOG("Could not find io_device %p\n", io_device);
+		assert(false);
+		return;
+	}
+
+	c = calloc(1, sizeof(*c));
+	if (c == NULL) {
+		SPDK_ERRLOG("Unable to allocate caller\n");
+		assert(false);
+		return;
+	}
+
+	c->io_device = io_device;
+	c->fn = fn;
+	c->ctx = ctx;
+
+	rc = spdk_thread_send_msg(thread, _io_channel_send_msg, c);
+	if (rc != 0) {
+		SPDK_WARNLOG("Failed to send io_channel msg, rc = %d\n", rc);
+		free(c);
+	}
+}
+
+void
+spdk_for_each_channel_broadcast(void *io_device, spdk_channel_msg_fn fn, void *ctx)
+{
+	struct spdk_thread *thread;
+	bool is_exited;
+
+	pthread_mutex_lock(&g_devlist_mutex);
+
+	thread = TAILQ_FIRST(&g_threads);
+	while (thread != NULL) {
+		is_exited = spdk_thread_is_exited(thread);
+		pthread_mutex_unlock(&g_devlist_mutex);
+
+		if (!is_exited) {
+			spdk_io_channel_send_msg(thread, io_device, fn, ctx);
+		}
+
+		pthread_mutex_lock(&g_devlist_mutex);
+		thread = TAILQ_NEXT(thread, tailq);
+	}
+
+	pthread_mutex_unlock(&g_devlist_mutex);
+}
+
 static void
 thread_interrupt_destroy(struct spdk_thread *thread)
 {
