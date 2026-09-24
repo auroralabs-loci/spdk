@@ -123,7 +123,7 @@ usage(void)
 }
 
 static void
-display_namespace_dpc(const struct spdk_nvme_ns_data *nsdata)
+display_namespace_dpc(const struct spdk_nvme_ns_data_head *nsdata)
 {
 	if (nsdata->dpc.pit1 || nsdata->dpc.pit2 || nsdata->dpc.pit3) {
 		if (nsdata->dpc.pit1) {
@@ -156,11 +156,13 @@ display_namespace_dpc(const struct spdk_nvme_ns_data *nsdata)
 static void
 display_namespace(struct spdk_nvme_ns *ns)
 {
-	const struct spdk_nvme_ns_data		*nsdata;
+	const struct spdk_nvme_ns_data		*nsdata_full;
+	const struct spdk_nvme_ns_data_head	*nsdata;
 	uint32_t				i;
 	uint32_t				format_index;
 
-	nsdata = spdk_nvme_ns_get_data(ns);
+	nsdata_full = spdk_nvme_ns_get_data(ns);
+	nsdata = &nsdata_full->head;
 	format_index = spdk_nvme_ns_get_active_format_index(ns);
 
 	printf("Namespace ID:%d\n", spdk_nvme_ns_get_id(ns));
@@ -184,7 +186,7 @@ display_namespace(struct spdk_nvme_ns *ns)
 	       format_index);
 	for (i = 0; i <= nsdata->nlbaf; i++)
 		printf("LBA Format #%02d: Data Size: %5d  Metadata Size: %5d\n",
-		       i, 1 << nsdata->lbaf[i].lbads, nsdata->lbaf[i].ms);
+		       i, 1 << nsdata_full->lbaf[i].lbads, nsdata_full->lbaf[i].ms);
 	printf("Data Protection Capabilities:");
 	display_namespace_dpc(nsdata);
 	if (SPDK_NVME_FMT_NVM_PROTECTION_DISABLE == nsdata->dps.pit) {
@@ -349,7 +351,7 @@ get_lba_format(const struct spdk_nvme_ns_data *ns_data)
 	int lbaf, i;
 
 	printf("\nSupported LBA formats:\n");
-	for (i = 0; i <= ns_data->nlbaf; i++) {
+	for (i = 0; i <= ns_data->head.nlbaf; i++) {
 		printf("%2d: %d data bytes", i, 1 << ns_data->lbaf[i].lbads);
 		if (ns_data->lbaf[i].ms) {
 			printf(" + %d metadata bytes", ns_data->lbaf[i].ms);
@@ -357,8 +359,8 @@ get_lba_format(const struct spdk_nvme_ns_data *ns_data)
 		printf("\n");
 	}
 
-	printf("Please input LBA format index (0 - %d):\n", ns_data->nlbaf);
-	if (scanf("%d", &lbaf) != 1 || lbaf > ns_data->nlbaf) {
+	printf("Please input LBA format index (0 - %d):\n", ns_data->head.nlbaf);
+	if (scanf("%d", &lbaf) != 1 || lbaf > ns_data->head.nlbaf) {
 		return -1;
 	}
 
@@ -456,13 +458,15 @@ ns_manage_add(struct dev *device, uint64_t ns_size, uint64_t ns_capacity, int ns
 	      uint8_t ns_dps_type, uint8_t ns_dps_location, uint8_t ns_nmic)
 {
 	uint32_t nsid;
-	struct spdk_nvme_ns_data *ndata;
+	struct spdk_nvme_ns_data *nsdata_full;
+	struct spdk_nvme_ns_data_head *ndata;
 
-	ndata = spdk_dma_zmalloc(sizeof(struct spdk_nvme_ns_data), 4096, NULL);
-	if (ndata == NULL) {
+	nsdata_full = spdk_dma_zmalloc(sizeof(struct spdk_nvme_ns_data), 4096, NULL);
+	if (nsdata_full == NULL) {
 		printf("Allocation error (namespace data)\n");
 		exit(1);
 	}
+	ndata = &nsdata_full->head;
 
 	ndata->nsze = ns_size;
 	ndata->ncap = ns_capacity;
@@ -473,14 +477,14 @@ ns_manage_add(struct dev *device, uint64_t ns_size, uint64_t ns_capacity, int ns
 		ndata->dps.md_start = ns_dps_location;
 	}
 	ndata->nmic.shrns = ns_nmic;
-	nsid = spdk_nvme_ctrlr_create_ns(device->ctrlr, ndata);
+	nsid = spdk_nvme_ctrlr_create_ns(device->ctrlr, nsdata_full);
 	if (nsid == 0) {
 		fprintf(stdout, "ns manage: Failed\n");
 	} else {
 		printf("Created namespace ID %u\n", nsid);
 	}
 
-	spdk_dma_free(ndata);
+	spdk_dma_free(nsdata_full);
 }
 
 static void

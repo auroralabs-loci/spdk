@@ -243,8 +243,8 @@ test_nvme_ns_data(void)
 	struct spdk_nvme_ctrlr ctrlr = {};
 	struct spdk_nvme_ns *ns = ut_ns_alloc(1, &ctrlr);
 	struct spdk_nvme_ns_data expected_nsdata = {
-		.nsze = 1000,
-		.ncap = 1000,
+		.head.nsze = 1000,
+		.head.ncap = 1000,
 	};
 	const struct spdk_nvme_ns_data_head *nsdata;
 
@@ -266,13 +266,13 @@ test_nvme_ns_data(void)
 	/* Populate nguid and verify spdk_nvme_ns_get_nguid() returns a pointer
 	 * into nguid carrying the populated value.
 	 */
-	memset(expected_nsdata.nguid, 0xCC, sizeof(expected_nsdata.nguid));
+	memset(expected_nsdata.head.nguid, 0xCC, sizeof(expected_nsdata.head.nguid));
 	fake_nsdata = &expected_nsdata;
 	SPDK_CU_ASSERT_FATAL(nvme_ns_identify(ns) == 0);
 	fake_nsdata = NULL;
 	CU_ASSERT(spdk_nvme_ns_get_nguid(ns) == nsdata->nguid);
-	CU_ASSERT(memcmp(spdk_nvme_ns_get_nguid(ns), expected_nsdata.nguid,
-			 sizeof(expected_nsdata.nguid)) == 0);
+	CU_ASSERT(memcmp(spdk_nvme_ns_get_nguid(ns), expected_nsdata.head.nguid,
+			 sizeof(expected_nsdata.head.nguid)) == 0);
 
 	nvme_ns_mark_inactive(ns);
 
@@ -304,17 +304,17 @@ test_nvme_ns_set_identify_data(void)
 	ns->ctrlr->min_page_size = 4096;
 	ns->ctrlr->max_xfer_size = 131072;
 
-	nsdata.ncap = 1;
-	nsdata.flbas.extended = 1;
-	nsdata.nsrescap.raw = 1;
-	nsdata.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_TYPE1;
-	nsdata.flbas.format = 0;
-	nsdata.flbas.msb_format = 0;
+	nsdata.head.ncap = 1;
+	nsdata.head.flbas.extended = 1;
+	nsdata.head.nsrescap.raw = 1;
+	nsdata.head.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_TYPE1;
+	nsdata.head.flbas.format = 0;
+	nsdata.head.flbas.msb_format = 0;
 	nsdata.lbaf[0].lbads = 9;
 	nsdata.lbaf[0].ms = 8;
 
-	/* case 1:  nsdata->noiob > 0 */
-	nsdata.noiob = 1;
+	/* case 1:  nsdata->head.noiob > 0 */
+	nsdata.head.noiob = 1;
 	nvme_ns_set_identify_data(ns, &nsdata);
 	CU_ASSERT(spdk_nvme_ns_get_optimal_io_boundary(ns) == 1)
 
@@ -343,8 +343,8 @@ test_nvme_ns_set_identify_data(void)
 	CU_ASSERT(ns->sectors_per_max_io == 256);
 	CU_ASSERT(ns->sectors_per_max_io_no_md == 256);
 
-	nsdata.nlbaf = 1;
-	nsdata.flbas.format = 1;
+	nsdata.head.nlbaf = 1;
+	nsdata.head.flbas.format = 1;
 	nsdata.lbaf[1].lbads = 9;
 	nsdata.lbaf[1].ms = 16;
 	nvm_nsdata.elbaf[0].sts = 16;
@@ -370,10 +370,10 @@ test_nvme_ns_set_identify_data(void)
 	nvme_ns_set_identify_data(ns, &nsdata);
 	CU_ASSERT(spdk_nvme_ns_get_pi_storage_tag_size(ns) == 32);
 
-	nsdata.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_DISABLE;
+	nsdata.head.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_DISABLE;
 	nvme_ns_set_identify_data(ns, &nsdata);
 	CU_ASSERT(spdk_nvme_ns_get_pi_storage_tag_size(ns) == 0);
-	nsdata.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_TYPE1;
+	nsdata.head.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_TYPE1;
 	nvme_ns_set_identify_data(ns, &nsdata);
 	CU_ASSERT(spdk_nvme_ns_get_pi_storage_tag_size(ns) == 32);
 
@@ -404,23 +404,23 @@ test_nvme_ns_set_pi_format(void)
 	ctrlr.max_xfer_size = 131072;
 	ns = ut_ns_alloc(1, &ctrlr);
 
-	nsdata.ncap = 1;
-	nsdata.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_TYPE1;
+	nsdata.head.ncap = 1;
+	nsdata.head.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_TYPE1;
 	nsdata.lbaf[0].lbads = 9;
 	nsdata.lbaf[0].ms = 8;
 	nsdata.lbaf[1].lbads = 9;
 	nsdata.lbaf[1].ms = 16;
-	nsdata.nlbaf = 1;
+	nsdata.head.nlbaf = 1;
 
 	nvm.elbaf[0].pif = SPDK_NVME_32B_GUARD_PI;
 	nvm.elbaf[1].pif = SPDK_NVME_64B_GUARD_PI;
 
 	/* case 1: PI is not enabled for the active format. Expect: 16b guard. */
-	nsdata.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_DISABLE;
+	nsdata.head.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_DISABLE;
 	nvme_ns_set_identify_data(ns, &nsdata);
 	CU_ASSERT(!(spdk_nvme_ns_get_flags(ns) & SPDK_NVME_NS_DPS_PI_SUPPORTED));
 	CU_ASSERT(spdk_nvme_ns_get_pi_format(ns) == SPDK_NVME_16B_GUARD_PI);
-	nsdata.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_TYPE1;
+	nsdata.head.dps.pit = SPDK_NVME_FMT_NVM_PROTECTION_TYPE1;
 
 	/* case 2: IOCS specific data has not been retrieved yet. Expect: 16b guard. */
 	ctrlr.cdata.ctratt.elbas = 1;
@@ -435,10 +435,10 @@ test_nvme_ns_set_pi_format(void)
 	CU_ASSERT(spdk_nvme_ns_get_pi_format(ns) == SPDK_NVME_32B_GUARD_PI);
 
 	/* case 4: the PI format follows the active LBA format. */
-	nsdata.flbas.format = 1;
+	nsdata.head.flbas.format = 1;
 	nvme_ns_set_identify_data(ns, &nsdata);
 	CU_ASSERT(spdk_nvme_ns_get_pi_format(ns) == SPDK_NVME_64B_GUARD_PI);
-	nsdata.flbas.format = 0;
+	nsdata.head.flbas.format = 0;
 
 	/* case 5: ELBAS is 0, so the elbaf array is not valid. Expect: 16b guard. */
 	ctrlr.cdata.ctratt.elbas = 0;
@@ -482,7 +482,7 @@ test_spdk_nvme_ns_get_values(void)
 	CU_ASSERT(spdk_nvme_ns_get_extended_sector_size(ns) == 512);
 
 	/* case6: spdk_nvme_ns_get_num_sectors */
-	nsdata->nsze = 1024;
+	nsdata->head.nsze = 1024;
 	CU_ASSERT(spdk_nvme_ns_get_num_sectors(ns) == 1024);
 
 	/* case7: spdk_nvme_ns_get_size */
@@ -509,7 +509,7 @@ test_spdk_nvme_ns_get_values(void)
 
 	/* case13: spdk_nvme_ns_get_dealloc_logical_block_read_value */
 	ns->ctrlr->quirks = NVME_QUIRK_READ_ZERO_AFTER_DEALLOCATE | NVME_INTEL_QUIRK_WRITE_LATENCY;
-	nsdata->dlfeat.bits.read_value = SPDK_NVME_DEALLOC_NOT_REPORTED;
+	nsdata->head.dlfeat.bits.read_value = SPDK_NVME_DEALLOC_NOT_REPORTED;
 	CU_ASSERT(spdk_nvme_ns_get_dealloc_logical_block_read_value(ns) == SPDK_NVME_DEALLOC_READ_00);
 
 	ns->ctrlr->quirks = NVME_INTEL_QUIRK_READ_LATENCY;
@@ -580,9 +580,9 @@ test_nvme_ns_data_alloc_mode_lbaf_4(void)
 		  NVME_NS_DATA_LBAF_INLINE * sizeof(struct spdk_nvme_ns_data_lbaf));
 
 	/* Drive nvme_ns_set_identify_data advertising nlbaf=8. */
-	nsdata.nlbaf = 8;
-	nsdata.ncap = 1;
-	nsdata.flbas.format = 0;
+	nsdata.head.nlbaf = 8;
+	nsdata.head.ncap = 1;
+	nsdata.head.flbas.format = 0;
 	for (i = 0; i < SPDK_NVME_NS_MAX_LBA_FORMATS; i++) {
 		nsdata.lbaf[i].lbads = 9 + i;
 		nsdata.lbaf[i].ms = i;
@@ -603,7 +603,7 @@ test_nvme_ns_data_alloc_mode_lbaf_4(void)
 	CU_ASSERT(spdk_nvme_ns_get_format(ns, SPDK_NVME_NS_MAX_LBA_FORMATS - 1, &lbaf) == -EINVAL);
 
 	/* Active format index itself unreachable. */
-	nsdata.flbas.format = NVME_NS_DATA_LBAF_INLINE;
+	nsdata.head.flbas.format = NVME_NS_DATA_LBAF_INLINE;
 
 	nvme_ns_set_identify_data(ns, &nsdata);
 

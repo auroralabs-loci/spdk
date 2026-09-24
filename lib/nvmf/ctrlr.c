@@ -3287,12 +3287,12 @@ nvmf_ctrlr_identify_ns(struct spdk_nvmf_ctrlr *ctrlr,
 
 	if (subsystem->opts.ana_reporting) {
 		assert(ns->anagrpid - 1 < subsystem->max_nsid);
-		nsdata->anagrpid = ns->anagrpid;
+		nsdata->head.anagrpid = ns->anagrpid;
 
 		ana_state = nvmf_ctrlr_get_ana_state(ctrlr, ns->anagrpid);
 		if (ana_state == SPDK_NVME_ANA_INACCESSIBLE_STATE ||
 		    ana_state == SPDK_NVME_ANA_PERSISTENT_LOSS_STATE) {
-			nsdata->nuse = 0;
+			nsdata->head.nuse = 0;
 		}
 	}
 }
@@ -3322,25 +3322,26 @@ identify_ns_passthru_cb(struct spdk_nvmf_request *req)
 	nvmf_ctrlr_identify_ns(ctrlr, cmd, rsp, &nvmf_nsdata, req->orig_nsid);
 
 	/* Update fabric's namespace according to SSD's namespace */
-	if (nvme_nsdata.nsfeat.optperf) {
-		nvmf_nsdata.nsfeat.optperf = nvme_nsdata.nsfeat.optperf;
-		nvmf_nsdata.npwg = nvme_nsdata.npwg;
-		nvmf_nsdata.npwa = nvme_nsdata.npwa;
-		nvmf_nsdata.npdg = nvme_nsdata.npdg;
-		nvmf_nsdata.npda = nvme_nsdata.npda;
-		nvmf_nsdata.nows = nvme_nsdata.nows;
+	if (nvme_nsdata.head.nsfeat.optperf) {
+		nvmf_nsdata.head.nsfeat.optperf = nvme_nsdata.head.nsfeat.optperf;
+		nvmf_nsdata.head.npwg = nvme_nsdata.head.npwg;
+		nvmf_nsdata.head.npwa = nvme_nsdata.head.npwa;
+		nvmf_nsdata.head.npdg = nvme_nsdata.head.npdg;
+		nvmf_nsdata.head.npda = nvme_nsdata.head.npda;
+		nvmf_nsdata.head.nows = nvme_nsdata.head.nows;
 	}
 
-	if (nvme_nsdata.nsfeat.ns_atomic_write_unit) {
-		nvmf_nsdata.nsfeat.ns_atomic_write_unit = nvme_nsdata.nsfeat.ns_atomic_write_unit;
-		nvmf_nsdata.nawun = nvme_nsdata.nawun;
-		nvmf_nsdata.nawupf = nvme_nsdata.nawupf;
-		nvmf_nsdata.nacwu = nvme_nsdata.nacwu;
+	if (nvme_nsdata.head.nsfeat.ns_atomic_write_unit) {
+		nvmf_nsdata.head.nsfeat.ns_atomic_write_unit =
+			nvme_nsdata.head.nsfeat.ns_atomic_write_unit;
+		nvmf_nsdata.head.nawun = nvme_nsdata.head.nawun;
+		nvmf_nsdata.head.nawupf = nvme_nsdata.head.nawupf;
+		nvmf_nsdata.head.nacwu = nvme_nsdata.head.nacwu;
 	}
 
-	nvmf_nsdata.nabsn = nvme_nsdata.nabsn;
-	nvmf_nsdata.nabo = nvme_nsdata.nabo;
-	nvmf_nsdata.nabspf = nvme_nsdata.nabspf;
+	nvmf_nsdata.head.nabsn = nvme_nsdata.head.nabsn;
+	nvmf_nsdata.head.nabo = nvme_nsdata.head.nabo;
+	nvmf_nsdata.head.nabspf = nvme_nsdata.head.nabspf;
 
 	spdk_nvmf_request_copy_from_buf(req, &nvmf_nsdata, datalen);
 }

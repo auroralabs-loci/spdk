@@ -235,9 +235,10 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair)
 }
 
 void
-nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata,
+nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata_full,
 			    uint32_t transport_max_io_size)
 {
+	struct spdk_nvme_ns_data_head *nsdata = &nsdata_full->head;
 	uint64_t num_blocks;
 
 	SPDK_CU_ASSERT_FATAL(ns->bdev != NULL);
@@ -248,7 +249,7 @@ nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *n
 	nsdata->nlbaf = 0;
 	nsdata->flbas.format = 0;
 	nsdata->flbas.msb_format = 0;
-	nsdata->lbaf[0].lbads = spdk_u32log2(512);
+	nsdata_full->lbaf[0].lbads = spdk_u32log2(512);
 }
 
 void
@@ -1224,7 +1225,7 @@ test_identify_ns(void)
 					      &nsdata) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(rsp.status.sc == SPDK_NVME_SC_SUCCESS);
-	CU_ASSERT(nsdata.nsze == 1234);
+	CU_ASSERT(nsdata.head.nsze == 1234);
 
 	/* Valid but inactive NSID 1 */
 	spdk_bit_array_clear(ctrlr.visible_ns, 0);
@@ -1255,7 +1256,7 @@ test_identify_ns(void)
 					      &nsdata) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(rsp.status.sc == SPDK_NVME_SC_SUCCESS);
-	CU_ASSERT(nsdata.nsze == 5678);
+	CU_ASSERT(nsdata.head.nsze == 5678);
 
 	/* Invalid NSID 4 */
 	cmd.nsid = 4;
