@@ -10,6 +10,11 @@ descriptor arrays, now follows `SPDK_CONFIG_NVMF_MAX_SGL_ENTRIES` (build-time co
 runtime by `nvme_rdma_ctrlr_get_max_sges()` to the target's advertised MSDBD and the HCA's
 `max_sge`, so behavior is unchanged unless the build option is raised.
 
+Direct access to the Identify Namespace header fields on `struct spdk_nvme_ns_data`
+(`nsze`, `ncap`, and the other members of `struct spdk_nvme_ns_data_head`) is
+deprecated and will be removed in v27.05. Use the `head` member, for example
+`nsdata->head.nsze`. `lbaf` and `vendor_specific` are unchanged.
+
 ### nvmf
 
 Removed the deprecated `discovery_filter` parameter from the `nvmf_set_config` RPC.

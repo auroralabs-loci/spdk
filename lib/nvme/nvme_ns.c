@@ -19,8 +19,9 @@ nvme_ns_mark_inactive(struct spdk_nvme_ns *ns)
  * operations such as Attach/Detach.
  */
 void
-nvme_ns_set_identify_data(struct spdk_nvme_ns *ns, const struct spdk_nvme_ns_data *nsdata)
+nvme_ns_set_identify_data(struct spdk_nvme_ns *ns, const struct spdk_nvme_ns_data *nsdata_full)
 {
+	const struct spdk_nvme_ns_data_head *nsdata = &nsdata_full->head;
 	struct spdk_nvme_ctrlr		*ctrlr = ns->ctrlr;
 	struct spdk_nvme_nvm_ns_data	*nsdata_nvm;
 	struct spdk_nvme_ns_data_lbaf	lbaf;
@@ -36,12 +37,12 @@ nvme_ns_set_identify_data(struct spdk_nvme_ns *ns, const struct spdk_nvme_ns_dat
 
 	/* Identify Namespace returns a zero-filled structure for inactive namespace IDs. */
 	if (nsdata->ncap == 0) {
-		assert(spdk_mem_all_zero(nsdata, SPDK_NVME_IDENTIFY_BUFLEN));
+		assert(spdk_mem_all_zero(nsdata_full, SPDK_NVME_IDENTIFY_BUFLEN));
 		nvme_ns_mark_inactive(ns);
 		return;
 	}
 
-	memcpy(ns->nsdata, nsdata, nvme_ctrlr_get_nsdata_size(ns->ctrlr));
+	memcpy(ns->nsdata, nsdata_full, nvme_ctrlr_get_nsdata_size(ns->ctrlr));
 
 	nsdata_nvm = ns->nsdata_nvm;
 

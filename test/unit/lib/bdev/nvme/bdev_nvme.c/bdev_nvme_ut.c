@@ -559,8 +559,8 @@ ut_attach_ctrlr(const struct spdk_nvme_transport_id *trid, uint32_t num_ns,
 			ctrlr->ns[i].ctrlr = ctrlr;
 			ctrlr->ns[i].is_active = true;
 			ctrlr->ns[i].ana_state = SPDK_NVME_ANA_OPTIMIZED_STATE;
-			ctrlr->nsdata[i].nsze = 1024;
-			ctrlr->nsdata[i].nmic.shrns = multipath;
+			ctrlr->nsdata[i].head.nsze = 1024;
+			ctrlr->nsdata[i].head.nmic.shrns = multipath;
 		}
 
 		ctrlr->cdata.nn = num_ns;
@@ -1112,7 +1112,7 @@ spdk_nvme_ns_get_data_head(struct spdk_nvme_ns *ns)
 uint64_t
 spdk_nvme_ns_get_num_sectors(struct spdk_nvme_ns *ns)
 {
-	return _nvme_ns_get_data(ns)->nsze;
+	return _nvme_ns_get_data(ns)->head.nsze;
 }
 
 const struct spdk_uuid *
@@ -2351,7 +2351,7 @@ test_aer_cb(void)
 	 */
 	ctrlr->ns[0].is_active = true;
 	ctrlr->ns[2].is_active = false;
-	ctrlr->nsdata[3].nsze = 2048;
+	ctrlr->nsdata[3].head.nsze = 2048;
 
 	nvme_ctrlr_ns_attr_changed_cb(nvme_ctrlr, NULL, 0);
 
@@ -3166,28 +3166,28 @@ test_compare_ns(void)
 	CU_ASSERT(bdev_nvme_compare_ns(&ns1, &ns2) == true);
 
 	/* Only EUI64 are defined and not matched. */
-	nsdata1.eui64 = 0xABCDEF0123456789;
-	nsdata2.eui64 = 0xBBCDEF0123456789;
+	nsdata1.head.eui64 = 0xABCDEF0123456789;
+	nsdata2.head.eui64 = 0xBBCDEF0123456789;
 	CU_ASSERT(bdev_nvme_compare_ns(&ns1, &ns2) == false);
 
 	/* Only EUI64 are defined and matched. */
-	nsdata2.eui64 = 0xABCDEF0123456789;
+	nsdata2.head.eui64 = 0xABCDEF0123456789;
 	CU_ASSERT(bdev_nvme_compare_ns(&ns1, &ns2) == true);
 
 	/* Only NGUID are defined and not matched. */
-	nsdata1.eui64 = 0x0;
-	nsdata2.eui64 = 0x0;
-	nsdata1.nguid[0] = 0x12;
-	nsdata2.nguid[0] = 0x10;
+	nsdata1.head.eui64 = 0x0;
+	nsdata2.head.eui64 = 0x0;
+	nsdata1.head.nguid[0] = 0x12;
+	nsdata2.head.nguid[0] = 0x10;
 	CU_ASSERT(bdev_nvme_compare_ns(&ns1, &ns2) == false);
 
 	/* Only NGUID are defined and matched. */
-	nsdata2.nguid[0] = 0x12;
+	nsdata2.head.nguid[0] = 0x12;
 	CU_ASSERT(bdev_nvme_compare_ns(&ns1, &ns2) == true);
 
 	/* Only UUID are defined and not matched. */
-	nsdata1.nguid[0] = 0x0;
-	nsdata2.nguid[0] = 0x0;
+	nsdata1.head.nguid[0] = 0x0;
+	nsdata2.head.nguid[0] = 0x0;
 	ns1.uuid = &uuid1;
 	ns2.uuid = &uuid2;
 	CU_ASSERT(bdev_nvme_compare_ns(&ns1, &ns2) == false);
@@ -3201,10 +3201,10 @@ test_compare_ns(void)
 	CU_ASSERT(bdev_nvme_compare_ns(&ns1, &ns2) == true);
 
 	/* All EUI64, NGUID, and UUID are defined and matched. */
-	nsdata1.eui64 = 0x123456789ABCDEF;
-	nsdata2.eui64 = 0x123456789ABCDEF;
-	nsdata1.nguid[15] = 0x34;
-	nsdata2.nguid[15] = 0x34;
+	nsdata1.head.eui64 = 0x123456789ABCDEF;
+	nsdata2.head.eui64 = 0x123456789ABCDEF;
+	nsdata1.head.nguid[15] = 0x34;
+	nsdata2.head.nguid[15] = 0x34;
 	CU_ASSERT(bdev_nvme_compare_ns(&ns1, &ns2) == true);
 
 	/* CSI are not matched. */

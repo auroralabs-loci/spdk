@@ -481,14 +481,14 @@ nvme_ctrlr_cmd_identify(struct spdk_nvme_ctrlr *ctrlr, uint8_t cns, uint16_t cnt
 
 		if (g_active_ns_list == NULL) {
 			if (nsid >= 1 && nsid <= ctrlr->cdata.nn) {
-				nsdata->ncap = 1;
+				nsdata->head.ncap = 1;
 			}
 		} else {
 			uint32_t i;
 
 			for (i = 0; i < g_active_ns_list_length; i++) {
 				if (g_active_ns_list[i] == nsid) {
-					nsdata->ncap = 1;
+					nsdata->head.ncap = 1;
 					break;
 				}
 			}
@@ -758,7 +758,7 @@ nvme_ns_identify(struct spdk_nvme_ns *ns)
 void
 nvme_ns_set_identify_data(struct spdk_nvme_ns *ns, const struct spdk_nvme_ns_data *nsdata)
 {
-	ns->active = nsdata->ncap != 0;
+	ns->active = nsdata->head.ncap != 0;
 	ns->identify_pending = false;
 }
 
