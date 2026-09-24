@@ -3137,6 +3137,16 @@ nvme_ctrlr_identify_id_desc_async(struct spdk_nvme_ns *ns)
 	struct nvme_ctrlr_identify_ctx *ctx;
 	int rc;
 
+	while (ns && ns->id_desc_skip) {
+		ns = nvme_ctrlr_get_next_active_ns(ctrlr, ns->id);
+	}
+
+	if (!ns) {
+		nvme_ctrlr_set_state(ctrlr, NVME_CTRLR_STATE_IDENTIFY_NS_IOCS_SPECIFIC,
+				     ctrlr->opts.admin_timeout_ms);
+		return 0;
+	}
+
 	ctx = nvme_ctrlr_create_identify_ctx(ns);
 	if (!ctx) {
 		return -ENOMEM;

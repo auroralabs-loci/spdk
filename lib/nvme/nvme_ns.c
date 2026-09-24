@@ -10,6 +10,7 @@ nvme_ns_mark_inactive(struct spdk_nvme_ns *ns)
 {
 	ns->active = false;
 	ns->identify_pending = false;
+	ns->id_desc_skip = false;
 }
 
 void
@@ -68,6 +69,16 @@ nvme_ns_set_identify_data(struct spdk_nvme_ns *ns, const struct spdk_nvme_ns_dat
 		assert(spdk_mem_all_zero(nsdata, SPDK_NVME_IDENTIFY_BUFLEN));
 		nvme_ns_mark_inactive(ns);
 		return;
+	}
+
+	if (ns->id_desc_skip) {
+		bool has_identity = nsdata->eui64 || !spdk_mem_all_zero(nsdata->nguid, sizeof(nsdata->nguid));
+		bool same = nvme_ns_get_data_head(ns)->eui64 == nsdata->eui64 &&
+			    memcmp(nvme_ns_get_data_head(ns)->nguid, nsdata->nguid, sizeof(nsdata->nguid)) == 0;
+
+		if (!same || !has_identity) {
+			ns->id_desc_skip = false;
+		}
 	}
 
 	memcpy(ns->nsdata, nsdata, nvme_ctrlr_get_nsdata_size(ns->ctrlr));
@@ -435,6 +446,14 @@ nvme_ns_identify_id_desc_async(struct spdk_nvme_ns *ns, struct nvme_completion_p
 		return 0;
 	}
 
+	if (ns->id_desc_skip) {
+		if (cb_fn) {
+			cb_fn(ns->id, cb_arg, 0);
+		}
+
+		return 0;
+	}
+
 	ctx = nvme_ns_create_identify_ctx(ns, status, cb_fn, cb_arg);
 	if (!ctx) {
 		return -ENOMEM;
@@ -754,6 +773,7 @@ nvme_ns_set_id_desc_list_data(struct spdk_nvme_ns *ns, const uint8_t *buf, size_
 	struct spdk_nvme_ctrlr *ctrlr = ns->ctrlr;
 	const struct spdk_nvme_ns_id_desc *desc;
 
+	ns->id_desc_skip = true;
 	ns->has_uuid = false;
 
 	desc = nvme_ns_find_id_desc(buf, buf_len, SPDK_NVME_NIDT_NGUID);
