@@ -200,3 +200,6 @@ xnvme_rpc
 
 # Temporarily disabled as part of no-huge rafactor
 nvmf_bdevio_no_huge
+
+# Waiting on spdk-ci config for vhost-user test
+vhost_user_fio
