@@ -19,6 +19,10 @@ fi
 source "$rootdir/test/common/autotest_common.sh"
 source "$conf"
 
+# Export compiler overrides if set in conf
+[[ -n ${CC:-} ]] && export CC
+[[ -n ${CXX:-} ]] && export CXX
+
 trap 'dump_backtrace; timing_finish || exit 1' EXIT
 
 # Runs agent scripts

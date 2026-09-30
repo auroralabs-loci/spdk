@@ -54,10 +54,23 @@ fi
 
 if [[ -n $SPDK_TEST_AUTOBUILD ]]; then
 	autobuild_test_suite
-elif [[ $SPDK_TEST_UNITTEST -eq 1 ]]; then
-	unittest_build
+elif [[ $SPDK_TEST_CHECK_FORMAT -eq 1 ]]; then
+	check_format
+elif [[ $SPDK_TEST_BUILD_DOC -eq 1 ]]; then
+	build_doc
+elif [[ $SPDK_TEST_BUILD_FILES -eq 1 ]]; then
+	build_files
+	dpdk_pci_api
 elif [[ $SPDK_TEST_SCANBUILD -eq 1 ]]; then
 	scanbuild_make
+elif [[ $SPDK_TEST_CHECK_SO_DEPS -eq 1 ]]; then
+	check_so_deps
+elif [[ $SPDK_TEST_PACKAGING -eq 1 ]]; then
+	build_packaging
+elif [[ $SPDK_TEST_UNITTEST -eq 1 ]]; then
+	unittest_build
+elif [[ $SPDK_TEST_RELEASE_BUILD -eq 1 ]]; then
+	build_release
 else
 	if [[ $SPDK_TEST_FUZZER -eq 1 ]]; then
 		# if we are testing nvmf fuzz with llvm lib, --with-shared will cause lib link fail
