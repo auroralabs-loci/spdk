@@ -3609,6 +3609,7 @@ test_nvme_ctrlr_ana_resize(void)
 
 	for (i = 0; i < ana_desc->num_of_nsid; ++i) {
 		ns = spdk_nvme_ctrlr_get_ns(&ctrlr, i + 1);
+		SPDK_CU_ASSERT_FATAL(ns != NULL);
 		CU_ASSERT(ns->ana_state == SPDK_NVME_ANA_NON_OPTIMIZED_STATE);
 	}
 
@@ -3631,6 +3632,7 @@ test_nvme_ctrlr_ana_resize(void)
 
 	for (i = 0; i < ana_desc->num_of_nsid; ++i) {
 		ns = spdk_nvme_ctrlr_get_ns(&ctrlr, i + 1);
+		SPDK_CU_ASSERT_FATAL(ns != NULL);
 		CU_ASSERT(ns->ana_state == SPDK_NVME_ANA_OPTIMIZED_STATE);
 	}
 
