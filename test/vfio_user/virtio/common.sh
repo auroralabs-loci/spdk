@@ -24,3 +24,15 @@ function vfu_tgt_run() {
 
 	timing_exit vfu_tgt_start
 }
+
+# Print the endpoint creation option selecting a packed or split virtqueue.
+function vfu_virtio_ring_opt() {
+	case "$1" in
+		packed) echo "--packed-ring" ;;
+		split) ;;
+		*)
+			echo "Unsupported ring format: $1" >&2
+			return 1
+			;;
+	esac
+}
