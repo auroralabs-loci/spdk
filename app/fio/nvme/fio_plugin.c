@@ -382,6 +382,14 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 		g_error = true;
 		return;
 	}
+
+	/* Memory and compute namespaces have no logical blocks to do I/O to. */
+	if (spdk_nvme_ns_get_csi(ns) == SPDK_NVME_CSI_SLM ||
+	    spdk_nvme_ns_get_csi(ns) == SPDK_NVME_CSI_CPCS) {
+		SPDK_ERRLOG("Memory or compute namespace by ns_id=%d is not supported\n", ns_id);
+		g_error = true;
+		return;
+	}
 	nsdata = spdk_nvme_ns_get_data_head(ns);
 
 	TAILQ_FOREACH(fio_qpair, &fio_thread->fio_qpair, link) {
@@ -1411,6 +1419,11 @@ spdk_fio_get_zoned_model(struct thread_data *td, struct fio_file *f, enum zbd_zo
 
 	case SPDK_NVME_CSI_KV:
 		log_err("spdk/nvme: KV namespace is currently not supported\n");
+		return -ENOSYS;
+
+	case SPDK_NVME_CSI_SLM:
+	case SPDK_NVME_CSI_CPCS:
+		/* Rejected by attach_cb(): they have no logical blocks. */
 		return -ENOSYS;
 
 	case SPDK_NVME_CSI_ZNS:
