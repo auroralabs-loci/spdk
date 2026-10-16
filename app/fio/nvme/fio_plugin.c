@@ -1413,6 +1413,11 @@ spdk_fio_get_zoned_model(struct thread_data *td, struct fio_file *f, enum zbd_zo
 		log_err("spdk/nvme: KV namespace is currently not supported\n");
 		return -ENOSYS;
 
+	case SPDK_NVME_CSI_SLM:
+	case SPDK_NVME_CSI_CPCS:
+		log_err("spdk/nvme: memory and compute namespaces have no logical blocks\n");
+		return -ENOSYS;
+
 	case SPDK_NVME_CSI_ZNS:
 		zns_data = spdk_nvme_zns_ns_get_data(fio_qpair->ns);
 		if (!zns_data) {
