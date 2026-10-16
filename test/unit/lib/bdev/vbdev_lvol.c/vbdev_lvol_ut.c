@@ -21,6 +21,7 @@ int g_num_clusters = 0;
 int g_registered_bdevs;
 int g_num_lvols = 0;
 int g_lvol_open_enomem = -1;
+int g_lvol_resize_rc = 0;
 struct spdk_lvol_store *g_lvs = NULL;
 struct spdk_lvol *g_lvol = NULL;
 struct lvol_store_bdev *g_lvs_bdev = NULL;
@@ -433,6 +434,7 @@ spdk_bdev_unregister(struct spdk_bdev *vbdev, spdk_bdev_unregister_cb cb_fn, voi
 	vbdev->internal.unregister_ctx = cb_arg;
 
 	spdk_bdev_alias_del_all(vbdev);
+	spdk_spin_destroy(&vbdev->internal.spinlock);
 	rc = vbdev->fn_table->destruct(vbdev->ctxt);
 	CU_ASSERT(rc == 1);
 }
@@ -555,6 +557,10 @@ spdk_lvs_destroy(struct spdk_lvol_store *lvs, spdk_lvs_op_complete cb_fn,
 void
 spdk_lvol_resize(struct spdk_lvol *lvol, size_t sz,  spdk_lvol_op_complete cb_fn, void *cb_arg)
 {
+	if (g_lvol_resize_rc != 0) {
+		return cb_fn(cb_arg, g_lvol_resize_rc);
+	}
+
 	g_num_clusters = spdk_divide_round_up(sz, spdk_bs_get_cluster_size(lvol->lvol_store->blobstore));
 	cb_fn(cb_arg, 0);
 }
@@ -568,6 +574,10 @@ spdk_lvol_set_read_only(struct spdk_lvol *lvol, spdk_lvol_op_complete cb_fn, voi
 int
 spdk_bdev_notify_blockcnt_change(struct spdk_bdev *bdev, uint64_t size)
 {
+	if (!TAILQ_EMPTY(&bdev->internal.open_descs) && bdev->blockcnt > size) {
+		return -EBUSY;
+	}
+
 	bdev->blockcnt = size;
 	return 0;
 }
@@ -598,7 +608,24 @@ spdk_bdev_get_by_name(const char *bdev_name)
 
 struct spdk_bdev_desc {
 	struct spdk_bdev *bdev;
+	TAILQ_ENTRY(spdk_bdev_desc) link;
 };
+
+static int
+ut_bdev_open(struct spdk_bdev *bdev, struct spdk_bdev_desc **_desc)
+{
+	struct spdk_bdev_desc *desc;
+
+	desc = calloc(1, sizeof(*desc));
+	if (desc == NULL) {
+		return -ENOMEM;
+	}
+
+	desc->bdev = bdev;
+	TAILQ_INSERT_TAIL(&bdev->internal.open_descs, desc, link);
+	*_desc = desc;
+	return 0;
+}
 
 int
 spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event_cb,
@@ -618,6 +645,7 @@ spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event
 	}
 
 	desc->bdev = bdev;
+	TAILQ_INSERT_TAIL(&bdev->internal.open_descs, desc, link);
 	*_desc = desc;
 	return 0;
 }
@@ -625,6 +653,7 @@ spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event
 void
 spdk_bdev_close(struct spdk_bdev_desc *desc)
 {
+	TAILQ_REMOVE(&desc->bdev->internal.open_descs, desc, link);
 	free(desc);
 }
 
@@ -814,6 +843,8 @@ int
 spdk_bdev_register(struct spdk_bdev *vbdev)
 {
 	TAILQ_INIT(&vbdev->aliases);
+	TAILQ_INIT(&vbdev->internal.open_descs);
+	spdk_spin_init(&vbdev->internal.spinlock);
 
 	g_registered_bdevs++;
 	return 0;
@@ -961,9 +992,14 @@ vbdev_lvol_rename_complete(void *cb_arg, int lvolerrno)
 static int
 ut_init_bdev(char *bdev_name, const char *uuid_str)
 {
+	if (g_bdev.internal.spinlock.initialized) {
+		spdk_spin_destroy(&g_bdev.internal.spinlock);
+	}
 	memset(&g_bdev, 0, sizeof(g_bdev));
 	g_bdev.name = bdev_name;
 	SPDK_CU_ASSERT_FATAL(spdk_uuid_parse(&g_bdev.uuid, uuid_str) == 0);
+	TAILQ_INIT(&g_bdev.internal.open_descs);
+	spdk_spin_init(&g_bdev.internal.spinlock);
 	lvol_already_opened = false;
 	return 0;
 }
@@ -1472,6 +1508,7 @@ ut_lvol_resize(void)
 {
 	struct spdk_lvol_store *lvs;
 	struct spdk_lvol *lvol;
+	struct spdk_bdev_desc *desc = NULL;
 	int sz = 10;
 	int rc = 0;
 
@@ -1506,6 +1543,46 @@ ut_lvol_resize(void)
 	vbdev_lvol_resize(NULL, 34 * g_cluster_size, vbdev_lvol_resize_complete, NULL);
 	CU_ASSERT(g_lvolerrno != 0);
 	assert_blockcnt(g_lvol, sz);
+
+	/* Shrinking with open descriptors must fail without touching the blob. */
+	g_num_clusters = 0;
+	g_lvolerrno = -1;
+	rc = ut_bdev_open(lvol->bdev, &desc);
+	CU_ASSERT(rc == 0);
+	vbdev_lvol_resize(lvol, sz / 2, vbdev_lvol_resize_complete, NULL);
+	CU_ASSERT(g_lvolerrno == -EBUSY);
+	CU_ASSERT(g_num_clusters == 0);
+	assert_blockcnt(g_lvol, sz);
+
+	/* Growing an lvol with open descriptors is still allowed. */
+	g_lvolerrno = -1;
+	sz = 40 * g_cluster_size;
+	vbdev_lvol_resize(lvol, sz, vbdev_lvol_resize_complete, NULL);
+	CU_ASSERT(g_lvolerrno == 0);
+	assert_blockcnt(g_lvol, sz);
+
+	spdk_bdev_close(desc);
+
+	/* Shrinking an lvol with no open descriptors is still allowed. */
+	g_lvolerrno = -1;
+	sz = 20 * g_cluster_size;
+	vbdev_lvol_resize(lvol, sz, vbdev_lvol_resize_complete, NULL);
+	CU_ASSERT(g_lvolerrno == 0);
+	assert_blockcnt(g_lvol, sz);
+
+	/* A failed blob shrink must restore the previous block count. */
+	g_lvolerrno = -1;
+	g_lvol_resize_rc = -ENOSPC;
+	vbdev_lvol_resize(lvol, sz / 2, vbdev_lvol_resize_complete, NULL);
+	CU_ASSERT(g_lvolerrno == -ENOSPC);
+	assert_blockcnt(g_lvol, sz);
+
+	/* A failed blob grow must not change the block count. */
+	g_lvolerrno = -1;
+	vbdev_lvol_resize(lvol, sz * 2, vbdev_lvol_resize_complete, NULL);
+	CU_ASSERT(g_lvolerrno == -ENOSPC);
+	assert_blockcnt(g_lvol, sz);
+	g_lvol_resize_rc = 0;
 
 	/* Successful lvol destroy */
 	vbdev_lvol_destroy(lvol, lvol_store_op_complete, NULL);
