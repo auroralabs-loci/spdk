@@ -859,6 +859,44 @@ spdk_nvme_qpair_get_fd(struct spdk_nvme_qpair *qpair, struct spdk_event_handler_
 	return nvme_transport_qpair_get_fd(ctrlr, qpair, opts);
 }
 
+static void
+nvme_qpair_check_error_reqs_timeout(struct spdk_nvme_qpair *qpair)
+{
+	struct spdk_nvme_ctrlr *ctrlr = qpair->ctrlr;
+	struct spdk_nvme_ctrlr_process *active_proc;
+	struct nvme_request *req, *tmp;
+	uint64_t now;
+
+	if (!ctrlr->timeout_enabled || ctrlr->state != NVME_CTRLR_STATE_READY) {
+		return;
+	}
+
+	if (nvme_qpair_is_admin_queue(qpair)) {
+		active_proc = nvme_ctrlr_get_current_process(ctrlr);
+	} else {
+		active_proc = qpair->active_proc;
+	}
+
+	if (active_proc == NULL || active_proc->timeout_cb_fn == NULL) {
+		return;
+	}
+
+	now = spdk_get_ticks();
+	STAILQ_FOREACH_SAFE(req, &qpair->err_req_head, stailq, tmp) {
+		/* Held requests were never submitted to the controller, so they have no CID.
+		 * Report 0xFFFF as a sentinel value to indicate the request has no hardware CID.
+		 * Note: 0xFFFF is a valid CID for large queues, but is used here as a sentinel
+		 * because held requests are never assigned a command identifier.
+		 *
+		 * Because the command never reached the controller, an abort attempt with
+		 * cid=0xFFFF will always fail with "could not be aborted" and fall back to
+		 * a controller reset. The abort-success case cannot be exercised via held
+		 * requests.
+		 */
+		nvme_request_check_timeout(req, UINT16_MAX, active_proc, now);
+	}
+}
+
 int32_t
 spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_completions)
 {
@@ -892,6 +930,8 @@ spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_
 		return -ENXIO;
 	}
 
+	qpair->in_completion_context = 1;
+
 	/* error injection for those queued error requests */
 	if (spdk_unlikely(qpair->err_cmd_enabled && !STAILQ_EMPTY(&qpair->err_req_head))) {
 		STAILQ_FOREACH_SAFE(req, &qpair->err_req_head, stailq, tmp) {
@@ -903,9 +943,16 @@ spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_
 								   req->cpl.status.sc, qpair->abort_dnr, true);
 			}
 		}
+
+		/* Held requests remain outstanding to the user, so report them as timed out.
+		 * Only call if err_req_head is not empty to avoid a pointless call and extra
+		 * nvme_ctrlr_get_current_process() lookup on the admin queue.
+		 */
+		if (!STAILQ_EMPTY(&qpair->err_req_head)) {
+			nvme_qpair_check_error_reqs_timeout(qpair);
+		}
 	}
 
-	qpair->in_completion_context = 1;
 	ret = nvme_transport_qpair_process_completions(qpair, max_completions);
 	if (ret < 0) {
 		if (ret == -ENXIO && nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTING) {
