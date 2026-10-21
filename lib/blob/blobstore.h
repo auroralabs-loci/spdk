@@ -207,6 +207,14 @@ struct spdk_blob_store {
 	void				*esnap_unload_cb_arg;
 };
 
+/* A freeze of `blob` (blob_freeze_io) waiting on a channel for the channel's
+ * cluster allocation of the blob to complete (blob_io_sync). */
+struct spdk_bs_freeze_wait {
+	struct spdk_io_channel_iter	*iter;
+	struct spdk_blob		*blob;
+	TAILQ_ENTRY(spdk_bs_freeze_wait) link;
+};
+
 struct spdk_bs_channel {
 	struct spdk_bs_request_set	*req_mem;
 	TAILQ_HEAD(, spdk_bs_request_set) reqs;
@@ -221,6 +229,9 @@ struct spdk_bs_channel {
 
 	TAILQ_HEAD(, spdk_bs_request_set) need_cluster_alloc;
 	TAILQ_HEAD(, spdk_bs_request_set) queued_io;
+
+	/* Freezes waiting for this channel's cluster allocation of their blob. */
+	TAILQ_HEAD(, spdk_bs_freeze_wait) freeze_waits;
 
 	/* This page is only used during release of an existing cluster. */
 	struct spdk_blob_md_page        *release_cluster_page;
