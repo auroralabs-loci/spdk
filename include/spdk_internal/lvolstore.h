@@ -42,6 +42,8 @@ struct spdk_lvol_req {
 	/* Only set while lvol is being deleted and has a clone. */
 	struct spdk_lvol	*clone_lvol;
 	size_t			sz;
+	/* Block count to restore if resizing the blob fails. */
+	uint64_t		blockcnt;
 	struct spdk_io_channel	*channel;
 	char			name[SPDK_LVOL_NAME_MAX];
 };
