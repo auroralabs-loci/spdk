@@ -1,6 +1,6 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2015 Intel Corporation. All rights reserved.
- *   Copyright (c) 2024 Samsung Electronics Co., Ltd. All rights reserved.
+ *   Copyright (c) 2024, 2026 Samsung Electronics Co., Ltd. All rights reserved.
  */
 
 /**
@@ -1715,6 +1715,11 @@ enum spdk_nvme_command_specific_status_code {
 	SPDK_NVME_SC_INVALID_PROTECTION_INFO		= 0x81,
 	SPDK_NVME_SC_ATTEMPTED_WRITE_TO_RO_RANGE	= 0x82,
 	SPDK_NVME_SC_CMD_SIZE_LIMIT_SIZE_EXCEEDED	= 0x83,
+	/* Copy and Memory Copy */
+	SPDK_NVME_SC_INCOMPATIBLE_NS_OR_FORMAT		= 0x85,
+	SPDK_NVME_SC_FAST_COPY_NOT_POSSIBLE		= 0x86,
+	SPDK_NVME_SC_OVERLAPPING_IO_RANGE		= 0x87,
+	SPDK_NVME_SC_NAMESPACE_NOT_REACHABLE		= 0x88,
 
 	SPDK_NVME_SC_ZONED_BOUNDARY_ERROR		= 0xb8,
 	SPDK_NVME_SC_ZONE_IS_FULL			= 0xb9,
@@ -1724,6 +1729,34 @@ enum spdk_nvme_command_specific_status_code {
 	SPDK_NVME_SC_TOO_MANY_ACTIVE_ZONES		= 0xbd,
 	SPDK_NVME_SC_TOO_MANY_OPEN_ZONES		= 0xbe,
 	SPDK_NVME_SC_INVALID_ZONE_STATE_TRANSITION	= 0xbf,
+};
+
+/**
+ * Command specific status codes of the Computational Programs Command Set
+ *
+ * These values are I/O Command Set specific command specific status codes, defined in the
+ * same table (NVMe Base Specification 2.4, Figure 105) as the copy status codes 85h to 88h
+ * of \ref spdk_nvme_command_specific_status_code.
+ */
+enum spdk_nvme_cpcs_command_specific_status_code {
+	SPDK_NVME_CPCS_SC_INSUFFICIENT_PROGRAM_RESOURCES	= 0x8a,
+	SPDK_NVME_CPCS_SC_INVALID_MEMORY_NAMESPACE		= 0x8b,
+	SPDK_NVME_CPCS_SC_INVALID_MEMORY_RANGE_SET		= 0x8c,
+	SPDK_NVME_CPCS_SC_INVALID_MEMORY_RANGE_SET_ID		= 0x8d,
+	SPDK_NVME_CPCS_SC_INVALID_PROGRAM_DATA			= 0x8e,
+	SPDK_NVME_CPCS_SC_INVALID_PROGRAM_INDEX			= 0x8f,
+	SPDK_NVME_CPCS_SC_INVALID_PROGRAM_TYPE			= 0x90,
+	SPDK_NVME_CPCS_SC_MAX_MEMORY_RANGES_EXCEEDED		= 0x91,
+	SPDK_NVME_CPCS_SC_MAX_MEMORY_RANGE_SETS_EXCEEDED	= 0x92,
+	SPDK_NVME_CPCS_SC_MAX_PROGRAMS_ACTIVATED		= 0x93,
+	SPDK_NVME_CPCS_SC_MAX_PROGRAM_BYTES_EXCEEDED		= 0x94,
+	SPDK_NVME_CPCS_SC_MEMORY_RANGE_SET_IN_USE		= 0x95,
+	SPDK_NVME_CPCS_SC_NO_PROGRAM				= 0x96,
+	SPDK_NVME_CPCS_SC_OVERLAPPING_MEMORY_RANGES		= 0x97,
+	SPDK_NVME_CPCS_SC_PROGRAM_NOT_ACTIVATED			= 0x98,
+	SPDK_NVME_CPCS_SC_PROGRAM_IN_USE			= 0x99,
+	SPDK_NVME_CPCS_SC_PROGRAM_INDEX_NOT_DOWNLOADABLE	= 0x9a,
+	SPDK_NVME_CPCS_SC_PROGRAM_TOO_BIG			= 0x9b,
 };
 
 /**
@@ -1798,8 +1831,12 @@ enum spdk_nvme_admin_opcode {
 	SPDK_NVME_OPC_SECURITY_RECEIVE			= 0x82,
 
 	SPDK_NVME_OPC_SANITIZE				= 0x84,
+	/* I/O Command Set specific: Computational Programs Command Set */
+	SPDK_NVME_OPC_CPCS_LOAD_PROGRAM			= 0x85,
 
 	SPDK_NVME_OPC_GET_LBA_STATUS			= 0x86,
+	SPDK_NVME_OPC_CPCS_PROGRAM_ACTIVATION		= 0x88,
+	SPDK_NVME_OPC_CPCS_MRS_MANAGEMENT		= 0x89,
 	SPDK_NVME_OPC_VENDOR_SPECIFIC_START		= 0xC0,
 };
 
@@ -1868,6 +1905,24 @@ enum spdk_nvme_kv_store_option {
  */
 enum spdk_nvme_kv_retrieve_option {
 	SPDK_NVME_KV_RETRIEVE_OPT_RETRIEVE_RAW			= 1 << 0,
+};
+
+/**
+ * Subsystem Local Memory command set opcodes
+ */
+enum spdk_nvme_slm_opcode {
+	/* SLM command set opcodes (CSI 0x03), SLM Command Set 1.3 Figure 7 */
+	SPDK_NVME_OPC_SLM_MEMORY_COPY			= 0x01,
+	SPDK_NVME_OPC_SLM_MEMORY_READ			= 0x02,
+	SPDK_NVME_OPC_SLM_MEMORY_FILL			= 0x04,
+	SPDK_NVME_OPC_SLM_MEMORY_WRITE			= 0x05,
+};
+
+/**
+ * Computational Programs command set opcodes
+ */
+enum spdk_nvme_cpcs_opcode {
+	SPDK_NVME_OPC_CPCS_EXECUTE_PROGRAM		= 0x01,
 };
 
 /**
@@ -3715,7 +3770,9 @@ struct spdk_nvme_iocs_vector {
 	uint8_t	nvm  : 1;
 	uint8_t	kv   : 1;
 	uint8_t	zns  : 1;
-	uint8_t	rsvd : 5;
+	uint8_t	slm  : 1;
+	uint8_t	cpcs : 1;
+	uint8_t	rsvd : 3;
 	uint8_t	rsvd2[7];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_iocs_vector) == 8, "Incorrect size");
@@ -4729,6 +4786,8 @@ enum spdk_nvme_csi {
 	SPDK_NVME_CSI_NVM	= 0x0,
 	SPDK_NVME_CSI_KV	= 0x1,
 	SPDK_NVME_CSI_ZNS	= 0x2,
+	SPDK_NVME_CSI_SLM	= 0x3,
+	SPDK_NVME_CSI_CPCS	= 0x4,
 };
 
 enum spdk_nvme_secure_erase_setting {
