@@ -247,7 +247,11 @@ _scanbuild_make() {
 	done
 	xtrace_restore
 
-	grep -E "CC|CXX" $out/build_output.txt | sed 's/\s\s\(CC\|CXX\)\s//g' | sed 's/\.o//g' > $out/built_c_files.txt
+	# A library may name a source outside its own directory, e.g. env_dpdk
+	# builds ../env/mem_map.c, and make echoes that path verbatim. Collapse
+	# the ".." so it compares equal to what find(1) produced above.
+	grep -E "CC|CXX" $out/build_output.txt | sed 's/\s\s\(CC\|CXX\)\s//g' | sed 's/\.o//g' \
+		| sed -E ':a; s#[^/]+/\.\./##; ta' > $out/built_c_files.txt
 	cat $rootdir/test/common/skipped_build_files.txt >> $out/built_c_files.txt
 
 	sort -o $out/all_c_files.txt $out/all_c_files.txt
