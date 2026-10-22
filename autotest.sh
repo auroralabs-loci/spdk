@@ -291,6 +291,10 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 		HUGENODE=0 run_test "vhost" $rootdir/test/vhost/vhost.sh --iso
 	fi
 
+	if [ $SPDK_TEST_VHOST_USER -eq 1 ]; then
+		run_test "vhost_user_fio" $rootdir/test/vhost/user/fio.sh
+	fi
+
 	if [ $SPDK_TEST_VFIOUSER_QEMU -eq 1 ]; then
 		HUGENODE=0 run_test "vfio_user_qemu" $rootdir/test/vfio_user/vfio_user.sh --iso
 	fi
