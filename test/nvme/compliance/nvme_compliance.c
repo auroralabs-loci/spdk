@@ -1096,9 +1096,9 @@ admin_identify_ns(void)
 		ns = spdk_nvme_ctrlr_get_ns(ctrlr, active_nsid);
 		SPDK_CU_ASSERT_FATAL(ns != NULL);
 
-		if (ns_data->nsfeat.optperf) {
-			npwg = ns_data->npwg + 1;
-			nows = ns_data->nows + 1;
+		if (ns_data->head.nsfeat.optperf) {
+			npwg = ns_data->head.npwg + 1;
+			nows = ns_data->head.nows + 1;
 
 			CU_ASSERT(npwg * spdk_nvme_ns_get_sector_size(ns) <= max_xfer_size);
 			CU_ASSERT(nows * spdk_nvme_ns_get_sector_size(ns) <= max_xfer_size);

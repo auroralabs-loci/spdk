@@ -117,9 +117,10 @@ nvmf_bdev_ctrlr_complete_admin_cmd(struct spdk_bdev_io *bdev_io, bool success,
 }
 
 void
-nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata,
+nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata_full,
 			    uint32_t transport_max_io_size)
 {
+	struct spdk_nvme_ns_data_head *nsdata = &nsdata_full->head;
 	struct spdk_bdev *bdev = ns->bdev;
 	struct spdk_bdev_desc *desc = ns->desc;
 	uint64_t num_blocks;
@@ -137,9 +138,9 @@ nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *n
 	nsdata->flbas.format = 0;
 	nsdata->flbas.msb_format = 0;
 	nsdata->nacwu = spdk_bdev_get_acwu(bdev) - 1; /* nacwu is 0-based */
-	nsdata->lbaf[0].ms = spdk_bdev_desc_get_md_size(desc);
-	nsdata->lbaf[0].lbads = spdk_u32log2(spdk_bdev_desc_get_block_size(desc));
-	if (nsdata->lbaf[0].ms != 0) {
+	nsdata_full->lbaf[0].ms = spdk_bdev_desc_get_md_size(desc);
+	nsdata_full->lbaf[0].lbads = spdk_u32log2(spdk_bdev_desc_get_block_size(desc));
+	if (nsdata_full->lbaf[0].ms != 0) {
 		nsdata->flbas.extended = 1;
 		nsdata->mc.extended = 1;
 		nsdata->mc.pointer = 0;
@@ -165,7 +166,7 @@ nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *n
 		}
 	}
 
-	max_num_blocks = transport_max_io_size / (1U << nsdata->lbaf[0].lbads);
+	max_num_blocks = transport_max_io_size / (1U << nsdata_full->lbaf[0].lbads);
 
 	phys_blocklen = spdk_bdev_get_physical_block_size(bdev);
 	assert(phys_blocklen > 0);
@@ -175,7 +176,7 @@ nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *n
 	/* Note that all of these preferred and optimal sizes are 0-based. */
 	npwg = spdk_bdev_get_preferred_write_granularity(bdev);
 	if (npwg == 0) {
-		nsdata->npwg = (phys_blocklen >> nsdata->lbaf[0].lbads) - 1;
+		nsdata->npwg = (phys_blocklen >> nsdata_full->lbaf[0].lbads) - 1;
 	} else {
 		nsdata->npwg = npwg - 1;
 	}

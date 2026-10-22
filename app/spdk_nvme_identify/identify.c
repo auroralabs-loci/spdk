@@ -234,7 +234,7 @@ get_features(struct spdk_nvme_ctrlr *ctrlr, uint8_t *features_to_get, size_t num
 		if (features_to_get[i] == SPDK_NVME_FEAT_FDP) {
 			const struct spdk_nvme_ctrlr_data *cdata = spdk_nvme_ctrlr_get_data(ctrlr);
 			struct spdk_nvme_ns *ns = spdk_nvme_ctrlr_get_ns(ctrlr, nsid);
-			const struct spdk_nvme_ns_data *nsdata = spdk_nvme_ns_get_data(ns);
+			const struct spdk_nvme_ns_data_head *nsdata = spdk_nvme_ns_get_data_head(ns);
 
 			if (!cdata->ctratt.fdps) {
 				continue;
@@ -521,7 +521,7 @@ static int
 get_fdp_cfg_log_page(struct spdk_nvme_ns *ns)
 {
 	struct spdk_nvme_ctrlr *ctrlr = spdk_nvme_ns_get_ctrlr(ns);
-	const struct spdk_nvme_ns_data *nsdata = spdk_nvme_ns_get_data(ns);
+	const struct spdk_nvme_ns_data_head *nsdata = spdk_nvme_ns_get_data_head(ns);
 
 	outstanding_commands = 0;
 
@@ -576,7 +576,7 @@ static int
 get_fdp_ruhu_log_page(struct spdk_nvme_ns *ns)
 {
 	struct spdk_nvme_ctrlr *ctrlr = spdk_nvme_ns_get_ctrlr(ns);
-	const struct spdk_nvme_ns_data *nsdata = spdk_nvme_ns_get_data(ns);
+	const struct spdk_nvme_ns_data_head *nsdata = spdk_nvme_ns_get_data_head(ns);
 
 	outstanding_commands = 0;
 
@@ -632,7 +632,7 @@ static int
 get_fdp_stats_log_page(struct spdk_nvme_ns *ns)
 {
 	struct spdk_nvme_ctrlr *ctrlr = spdk_nvme_ns_get_ctrlr(ns);
-	const struct spdk_nvme_ns_data *nsdata = spdk_nvme_ns_get_data(ns);
+	const struct spdk_nvme_ns_data_head *nsdata = spdk_nvme_ns_get_data_head(ns);
 
 	outstanding_commands = 0;
 
@@ -656,7 +656,7 @@ static int
 get_fdp_events_log_page(struct spdk_nvme_ns *ns)
 {
 	struct spdk_nvme_ctrlr *ctrlr = spdk_nvme_ns_get_ctrlr(ns);
-	const struct spdk_nvme_ns_data *nsdata = spdk_nvme_ns_get_data(ns);
+	const struct spdk_nvme_ns_data_head *nsdata = spdk_nvme_ns_get_data_head(ns);
 
 	outstanding_commands = 0;
 
@@ -1363,7 +1363,7 @@ pi_format_string(uint32_t pif)
 
 static void
 print_nvm_ns_data(const struct spdk_nvme_nvm_ns_data *nsdata_nvm,
-		  const struct spdk_nvme_ns_data *nsdata)
+		  const struct spdk_nvme_ns_data_head *nsdata)
 {
 	uint32_t i;
 
@@ -1406,7 +1406,8 @@ static void
 print_namespace(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 {
 	const struct spdk_nvme_ctrlr_data	*cdata;
-	const struct spdk_nvme_ns_data		*nsdata;
+	const struct spdk_nvme_ns_data		*nsdata_full;
+	const struct spdk_nvme_ns_data_head	*nsdata;
 	const struct spdk_nvme_zns_ns_data	*nsdata_zns;
 	const struct spdk_nvme_nvm_ns_data	*nsdata_nvm;
 	const struct spdk_uuid			*uuid;
@@ -1417,7 +1418,8 @@ print_namespace(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	enum spdk_nvme_dealloc_logical_block_read_value	dlfeat_read_value;
 
 	cdata = spdk_nvme_ctrlr_get_data(ctrlr);
-	nsdata = spdk_nvme_ns_get_data(ns);
+	nsdata_full = spdk_nvme_ns_get_data(ns);
+	nsdata = &nsdata_full->head;
 	nsdata_zns = spdk_nvme_zns_ns_get_data(ns);
 	nsdata_nvm = spdk_nvme_nvm_ns_get_data(ns);
 	flags  = spdk_nvme_ns_get_flags(ns);
@@ -1425,7 +1427,7 @@ print_namespace(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	printf("Namespace ID:%d\n", spdk_nvme_ns_get_id(ns));
 
 	if (g_hex_dump) {
-		hex_dump(nsdata, sizeof(*nsdata));
+		hex_dump(nsdata_full, sizeof(*nsdata_full));
 		printf("\n");
 	}
 
@@ -1468,13 +1470,13 @@ print_namespace(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 		       nsdata->dps.md_start ? "First 8/16 Bytes" : "Last 8/16 Bytes");
 	}
 	format_index = spdk_nvme_ns_get_active_format_index(ns);
-	if (nsdata->lbaf[format_index].ms > 0) {
+	if (nsdata_full->lbaf[format_index].ms > 0) {
 		printf("Metadata Transferred as:               %s\n",
 		       nsdata->flbas.extended ? "Extended Data LBA" : "Separate Metadata Buffer");
 	}
 	printf("Namespace Sharing Capabilities:        %s\n",
 	       nsdata->nmic.shrns ? "Multiple Controllers" : "Private");
-	blocksize = 1 << nsdata->lbaf[format_index].lbads;
+	blocksize = 1 << nsdata_full->lbaf[format_index].lbads;
 	printf("Size (in LBAs):                        %lld (%lldGiB)\n",
 	       (long long)nsdata->nsze,
 	       (long long)nsdata->nsze * blocksize / 1024 / 1024 / 1024);
@@ -1557,7 +1559,7 @@ print_namespace(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	       format_index);
 	for (i = 0; i <= nsdata->nlbaf; i++) {
 		printf("LBA Format #%02d: Data Size: %5d  Metadata Size: %5d\n",
-		       i, 1 << nsdata->lbaf[i].lbads, nsdata->lbaf[i].ms);
+		       i, 1 << nsdata_full->lbaf[i].lbads, nsdata_full->lbaf[i].ms);
 		if (spdk_nvme_ns_get_csi(ns) == SPDK_NVME_CSI_ZNS) {
 			printf("LBA Format Extension #%02d: Zone Size (in LBAs): 0x%"PRIx64" Zone Descriptor Extension Size: %d bytes\n",
 			       i, nsdata_zns->lbafe[i].zsze, nsdata_zns->lbafe[i].zdes << 6);

@@ -97,6 +97,11 @@ setting the field to `SPDK_NVME_NS_DATA_ALLOC_MODE_HEAD`. Applications that scal
 count aggressively and can guarantee attached controllers advertise `NLBAF` < 4 can opt in to
 `SPDK_NVME_NS_DATA_ALLOC_MODE_HEAD_LBAF_4` for a further 240 B per-namespace saving over HEAD.
 
+#### `spdk_nvme_ns_data`
+
+Direct access to the fields on `struct spdk_nvme_ns_data` is deprecated and will be removed in
+v27.05. Use the `head` member instead, for example `nsdata->head.nsze`.
+
 ### sock
 
 #### `spdk_sock_group_add_sock_callbacks`
