@@ -4926,6 +4926,32 @@ spdk_bdev_add_io_stat(struct spdk_bdev_io_stat *total, struct spdk_bdev_io_stat 
 	}
 }
 
+void
+spdk_bdev_io_account_stat(struct spdk_bdev_io *bdev_io, enum spdk_bdev_io_type stat_type,
+			  uint64_t num_bytes)
+{
+	struct spdk_bdev_io_stat *io_stat = bdev_io->internal.ch->stat;
+
+	assert(spdk_get_thread() == spdk_bdev_io_get_thread(bdev_io));
+
+	switch (stat_type) {
+	case SPDK_BDEV_IO_TYPE_READ:
+		io_stat->bytes_read += num_bytes;
+		io_stat->num_read_ops++;
+		break;
+	case SPDK_BDEV_IO_TYPE_WRITE:
+		io_stat->bytes_written += num_bytes;
+		io_stat->num_write_ops++;
+		break;
+	case SPDK_BDEV_IO_TYPE_UNMAP:
+		io_stat->bytes_unmapped += num_bytes;
+		io_stat->num_unmap_ops++;
+		break;
+	default:
+		break;
+	}
+}
+
 static void
 bdev_get_io_stat(struct spdk_bdev_io_stat *to_stat, struct spdk_bdev_io_stat *from_stat)
 {
