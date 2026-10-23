@@ -4573,6 +4573,275 @@ blob_insert_cluster_msg_test(void)
 	ut_blob_close_and_delete(bs, blob);
 }
 
+/*
+ * An lvolstore failed to load after a restart ("Blobid (0x100000000) doesn't
+ * match what's in metadata (0x100000001)") because an extent page had been
+ * written over md page 0, the lvolstore super blob. bs_allocate_cluster() (on
+ * the I/O thread) claims an extent page only if the blob's extent table slot
+ * is 0 when it looks; a snapshot created while that cluster allocation was in
+ * flight swapped the clone's extent table for an empty one, and
+ * blob_insert_cluster_msg() (on the md thread) then found the slot 0 and wrote
+ * the extent page to the allocation's extent_page, which was 0. Release
+ * builds compile the assert that guards it out.
+ *
+ * ut_md0_race_setup() reproduces it deterministically: super blob A on md page
+ * 0; thin blob B whose extent page covering clusters 0 and 1 is allocated;
+ * cluster 1 allocated as the I/O thread would (slot occupied, so no extent
+ * page claimed); then B snapshotted before the insert runs.
+ */
+static void
+ut_md0_race_setup(struct spdk_blob_store *bs, struct spdk_io_channel *channel,
+		  spdk_blob_id *super_id, struct spdk_blob **blob_b, spdk_blob_id *snap_id,
+		  uint64_t *new_cluster)
+{
+	struct spdk_blob_opts opts;
+	struct spdk_blob *a, *b;
+	uint8_t payload[BLOCKLEN];
+	uint32_t extent_page = 0;
+
+	/* A: the "lvstore super blob", the first blob, so on md page 0. */
+	ut_spdk_blob_opts_init(&opts);
+	a = ut_blob_create_and_open(bs, &opts);
+	*super_id = spdk_blob_get_id(a);
+	SPDK_CU_ASSERT_FATAL(bs_blobid_to_page(*super_id) == 0);
+	spdk_bs_set_super(bs, *super_id, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	spdk_blob_close(a, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+
+	/* B: thin, with an extent table; writing cluster 0 allocates the extent
+	 * page that also covers cluster 1. */
+	ut_spdk_blob_opts_init(&opts);
+	opts.thin_provision = true;
+	opts.num_clusters = 4;
+	b = ut_blob_create_and_open(bs, &opts);
+	SPDK_CU_ASSERT_FATAL(b->use_extent_table);
+	SPDK_CU_ASSERT_FATAL(bs_cluster_to_extent_table_id(1) == bs_cluster_to_extent_table_id(0));
+	memset(payload, 0xC3, sizeof(payload));
+	spdk_blob_io_write(b, channel, payload, 0, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(b->active.extent_pages[0] != 0);
+
+	/* Allocate cluster 1 as bs_allocate_and_copy_cluster does: the slot is
+	 * occupied, so no extent page is claimed. */
+	spdk_spin_lock(&bs->used_lock);
+	CU_ASSERT(bs_allocate_cluster(b, 1, new_cluster, &extent_page, false) == 0);
+	spdk_spin_unlock(&bs->used_lock);
+	CU_ASSERT(extent_page == 0);
+
+	/* The snapshot lands while that allocation is in flight: B's extent
+	 * table is now the snapshot's empty one. */
+	spdk_bs_create_snapshot(bs, spdk_blob_get_id(b), NULL, blob_op_with_id_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blobid != SPDK_BLOBID_INVALID);
+	*snap_id = g_blobid;
+	CU_ASSERT(b->active.extent_pages[0] == 0);
+
+	*blob_b = b;
+}
+
+static void
+blob_insert_cluster_after_snapshot_md0(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_io_channel *channel;
+	struct spdk_blob *b;
+	struct {
+		struct spdk_blob_md_page page;
+		uint8_t pad[DEV_MAX_PHYS_BLOCKLEN - sizeof(struct spdk_blob_md_page)];
+	} md = {};
+	spdk_blob_id super_id, b_id, snap_id;
+	uint64_t new_cluster = 0;
+	uint8_t payload[BLOCKLEN], rbuf[BLOCKLEN];
+	uint64_t cluster_io = spdk_bs_get_cluster_size(bs) / spdk_bs_get_io_unit_size(bs);
+
+	if (!g_use_extent_table) {
+		return;
+	}
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+
+	ut_md0_race_setup(bs, channel, &super_id, &b, &snap_id, &new_cluster);
+	b_id = spdk_blob_get_id(b);
+
+	/* The in-flight allocation's insert, extent_page 0. */
+	g_bserrno = -1;
+	blob_insert_cluster_on_md_thread(b, 1, new_cluster, 0, &md.page, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(b->active.clusters[1] != 0);
+	CU_ASSERT(b->active.extent_pages[0] != 0);
+
+	/* Data written to the cluster must survive the reload. */
+	memset(payload, 0x5A, sizeof(payload));
+	spdk_blob_io_write(b, channel, payload, cluster_io, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+
+	spdk_blob_close(b, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+
+	ut_bs_reload(&bs, NULL);
+
+	/* The super blob is intact. */
+	spdk_bs_get_super(bs, blob_op_with_id_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(g_blobid == super_id);
+	g_blob = NULL;
+	spdk_bs_open_blob(bs, super_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(g_blob != NULL);
+	if (g_blob != NULL) {
+		spdk_blob_close(g_blob, blob_op_complete, NULL);
+		poll_threads();
+	}
+
+	/* B's new cluster is mapped and holds what was written; cluster 0 still
+	 * reads through to the snapshot. */
+	g_blob = NULL;
+	spdk_bs_open_blob(bs, b_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	b = g_blob;
+	CU_ASSERT(b->active.clusters[1] != 0);
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	memset(rbuf, 0, sizeof(rbuf));
+	spdk_blob_io_read(b, channel, rbuf, cluster_io, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(memcmp(rbuf, payload, sizeof(rbuf)) == 0);
+	memset(payload, 0xC3, sizeof(payload));
+	spdk_blob_io_read(b, channel, rbuf, 0, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(memcmp(rbuf, payload, sizeof(rbuf)) == 0);
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+
+	ut_blob_close_and_delete(bs, b);
+	spdk_bs_delete_blob(bs, snap_id, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+}
+
+/* Same race, but no md page is free when the insert claims one: the insert
+ * fails with -ENOSPC, leaves the cluster unmapped and claims nothing. */
+static void
+blob_insert_cluster_after_snapshot_enospc(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_io_channel *channel;
+	struct spdk_blob *b;
+	struct {
+		struct spdk_blob_md_page page;
+		uint8_t pad[DEV_MAX_PHYS_BLOCKLEN - sizeof(struct spdk_blob_md_page)];
+	} md = {};
+	spdk_blob_id super_id, snap_id;
+	uint64_t new_cluster = 0;
+	uint32_t *filled, nfilled = 0, i, cap, used_before;
+
+	if (!g_use_extent_table) {
+		return;
+	}
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+
+	ut_md0_race_setup(bs, channel, &super_id, &b, &snap_id, &new_cluster);
+
+	/* Use up every md page. */
+	cap = spdk_bit_array_capacity(bs->used_md_pages);
+	filled = calloc(cap, sizeof(*filled));
+	SPDK_CU_ASSERT_FATAL(filled != NULL);
+	used_before = spdk_bit_array_count_set(bs->used_md_pages);
+	for (i = spdk_bit_array_find_first_clear(bs->used_md_pages, 0); i < cap;
+	     i = spdk_bit_array_find_first_clear(bs->used_md_pages, i + 1)) {
+		spdk_bit_array_set(bs->used_md_pages, i);
+		filled[nfilled++] = i;
+	}
+
+	g_bserrno = 0;
+	blob_insert_cluster_on_md_thread(b, 1, new_cluster, 0, &md.page, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == -ENOSPC);
+	CU_ASSERT(b->active.clusters[1] == 0);
+	CU_ASSERT(b->active.extent_pages[0] == 0);
+
+	for (i = 0; i < nfilled; i++) {
+		spdk_bit_array_clear(bs->used_md_pages, filled[i]);
+	}
+	free(filled);
+	CU_ASSERT(spdk_bit_array_count_set(bs->used_md_pages) == used_before);
+
+	/* What blob_insert_cluster_revert does for the caller. */
+	spdk_spin_lock(&bs->used_lock);
+	bs_release_cluster(bs, new_cluster);
+	spdk_spin_unlock(&bs->used_lock);
+
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+	ut_blob_close_and_delete(bs, b);
+	spdk_bs_delete_blob(bs, snap_id, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+}
+
+/* The extent-page writer refuses md page 0 with an error and writes nothing. */
+static void
+blob_write_extent_page_refuses_md0(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob *a;
+	struct spdk_blob_opts opts;
+	struct {
+		struct spdk_blob_md_page page;
+		uint8_t pad[DEV_MAX_PHYS_BLOCKLEN - sizeof(struct spdk_blob_md_page)];
+	} md = {};
+	uint8_t *page0, *before;
+	spdk_blob_id super_id;
+
+	ut_spdk_blob_opts_init(&opts);
+	a = ut_blob_create_and_open(bs, &opts);
+	super_id = spdk_blob_get_id(a);
+	SPDK_CU_ASSERT_FATAL(bs_blobid_to_page(super_id) == 0);
+
+	/* Compare the md page struct only: blob serialization leaves the rest of
+	 * an md page larger than the struct uninitialized. */
+	page0 = &g_dev_buffer[bs_md_page_to_lba(bs, 0) * bs->dev->blocklen];
+	before = malloc(sizeof(struct spdk_blob_md_page));
+	SPDK_CU_ASSERT_FATAL(before != NULL);
+	memcpy(before, page0, sizeof(struct spdk_blob_md_page));
+
+	g_bserrno = 0;
+	blob_write_extent_page(a, 0, 0, &md.page, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == -EINVAL);
+	CU_ASSERT(memcmp(before, page0, sizeof(struct spdk_blob_md_page)) == 0);
+	free(before);
+
+	/* A still loads from md page 0. */
+	spdk_blob_close(a, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	ut_bs_reload(&bs, NULL);
+	g_blob = NULL;
+	spdk_bs_open_blob(bs, super_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	ut_blob_close_and_delete(bs, g_blob);
+}
+
 static void
 blob_thin_prov_rw(void)
 {
@@ -10616,6 +10885,9 @@ main(int argc, char **argv)
 		CU_ADD_TEST(suite_bs, blob_set_xattrs_test);
 		CU_ADD_TEST(suite_bs, blob_thin_prov_alloc);
 		CU_ADD_TEST(suite_bs, blob_insert_cluster_msg_test);
+		CU_ADD_TEST(suite_bs, blob_insert_cluster_after_snapshot_md0);
+		CU_ADD_TEST(suite_bs, blob_insert_cluster_after_snapshot_enospc);
+		CU_ADD_TEST(suite_bs, blob_write_extent_page_refuses_md0);
 		CU_ADD_TEST(suite_bs, blob_thin_prov_rw);
 		CU_ADD_TEST(suite, blob_thin_prov_write_count_io);
 		CU_ADD_TEST(suite, blob_thin_prov_unmap_cluster);
