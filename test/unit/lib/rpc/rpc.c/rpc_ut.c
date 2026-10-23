@@ -33,9 +33,11 @@ DEFINE_STUB_V(spdk_jsonrpc_server_shutdown, (struct spdk_jsonrpc_server *server)
 DECLARE_WRAPPER(open, int, (const char *pathname, int flags, mode_t mode));
 DECLARE_WRAPPER(close, int, (int fd));
 DECLARE_WRAPPER(flock, int, (int fd, int operation));
+DECLARE_WRAPPER(chmod, int, (const char *path, mode_t mode));
 DEFINE_WRAPPER(open, int, (const char *pathname, int flags, mode_t mode), (pathname, flags, mode));
 DEFINE_WRAPPER(close, int, (int fd), (fd));
 DEFINE_WRAPPER(flock, int, (int fd, int operation), (fd, operation));
+DEFINE_WRAPPER(chmod, int, (const char *path, mode_t mode), (path, mode));
 
 int
 spdk_json_decode_object(const struct spdk_json_val *values,
@@ -221,6 +223,7 @@ test_spdk_rpc_listen_close(void)
 	MOCK_SET(open, 1);
 	MOCK_SET(close, 0);
 	MOCK_SET(flock, 0);
+	MOCK_SET(chmod, 0);
 
 	server = spdk_rpc_server_listen(listen_addr);
 	SPDK_CU_ASSERT_FATAL(server != NULL);
@@ -238,6 +241,7 @@ test_spdk_rpc_listen_close(void)
 	MOCK_CLEAR(open);
 	MOCK_CLEAR(close);
 	MOCK_CLEAR(flock);
+	MOCK_CLEAR(chmod);
 }
 
 static void
@@ -251,6 +255,7 @@ test_rpc_run_multiple_servers(void)
 	MOCK_SET(open, 1);
 	MOCK_SET(close, 0);
 	MOCK_SET(flock, 0);
+	MOCK_SET(chmod, 0);
 
 	rpc_server1 = spdk_rpc_server_listen(listen_addr1);
 	CU_ASSERT(rpc_server1 != NULL);
@@ -266,6 +271,7 @@ test_rpc_run_multiple_servers(void)
 	MOCK_CLEAR(open);
 	MOCK_CLEAR(close);
 	MOCK_CLEAR(flock);
+	MOCK_CLEAR(chmod);
 }
 
 int

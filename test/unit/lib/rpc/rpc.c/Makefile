@@ -12,6 +12,7 @@ SPDK_MOCK_SYMBOLS = \
 	open \
 	close \
 	flock \
-	unlink
+	unlink \
+	chmod
 
 include $(SPDK_ROOT_DIR)/mk/spdk.unittest.mk

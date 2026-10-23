@@ -144,6 +144,62 @@ jsonrpc_handler(struct spdk_jsonrpc_request *request,
 	}
 }
 
+/*
+ * The lock file path is predictable and lives in a world-writable directory,
+ * so only trust a regular file owned by the current user: open it with
+ * O_NOFOLLOW and remove/recreate anything else (limited retries).
+ */
+static int
+rpc_lock_open(struct spdk_rpc_server *server)
+{
+	int flags = O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW;
+	struct stat st;
+	int i;
+
+	for (i = 0; i < 3; i++) {
+		server->lock_fd = open(server->lock_path, flags, 0600);
+		if (server->lock_fd == -1 && errno == EEXIST) {
+			/* A file is already there: only trust a regular
+			 * file owned by the current user, e.g. our own
+			 * leftover from a previous run. */
+			server->lock_fd = open(server->lock_path, O_RDWR | O_NOFOLLOW, 0600);
+			if (server->lock_fd == -1 || fstat(server->lock_fd, &st) != 0 ||
+			    !S_ISREG(st.st_mode) || st.st_uid != geteuid()) {
+				if (server->lock_fd != -1) {
+					close(server->lock_fd);
+					server->lock_fd = -1;
+				}
+				SPDK_NOTICELOG("Removed untrusted lock file %s\n",
+					       server->lock_path);
+				if (unlink(server->lock_path) != 0 && errno != ENOENT) {
+					SPDK_ERRLOG("Cannot remove untrusted lock file %s: %s\n",
+						    server->lock_path, spdk_strerror(errno));
+					return -1;
+				}
+				continue;
+			}
+		} else if (server->lock_fd == -1) {
+			SPDK_ERRLOG("Cannot open lock file %s: %s\n",
+				    server->lock_path, spdk_strerror(errno));
+			return -1;
+		}
+
+		if (flock(server->lock_fd, LOCK_EX | LOCK_NB) == 0) {
+			return 0;
+		}
+
+		/* The file is ours but the lock is held: a previous
+		 * process is still running on this address. */
+		SPDK_ERRLOG("RPC Unix domain socket path %s in use. Specify another.\n",
+			    server->listen_addr_unix.sun_path);
+		close(server->lock_fd);
+		server->lock_fd = -1;
+		return -1;
+	}
+
+	return -1;
+}
+
 struct spdk_rpc_server *
 spdk_rpc_server_listen(const char *listen_addr)
 {
@@ -175,17 +231,7 @@ spdk_rpc_server_listen(const char *listen_addr)
 		goto ret;
 	}
 
-	server->lock_fd = open(server->lock_path, O_RDWR | O_CREAT, 0600);
-	if (server->lock_fd == -1) {
-		SPDK_ERRLOG("Cannot open lock file %s: %s\n",
-			    server->lock_path, spdk_strerror(errno));
-		goto ret;
-	}
-
-	rc = flock(server->lock_fd, LOCK_EX | LOCK_NB);
-	if (rc != 0) {
-		SPDK_ERRLOG("RPC Unix domain socket path %s in use. Specify another.\n",
-			    server->listen_addr_unix.sun_path);
+	if (rpc_lock_open(server) != 0) {
 		goto ret;
 	}
 
@@ -203,6 +249,25 @@ spdk_rpc_server_listen(const char *listen_addr)
 		SPDK_ERRLOG("spdk_jsonrpc_server_listen() failed\n");
 		close(server->lock_fd);
 		unlink(server->lock_path);
+		goto ret;
+	}
+
+	/*
+	 * bind() creates the socket file with 0777 masked only by the process
+	 * umask, so tighten it explicitly: only the file owner may connect.
+	 */
+	rc = chmod(server->listen_addr_unix.sun_path, 0600);
+	if (rc != 0) {
+		SPDK_ERRLOG("Cannot set permissions on RPC socket %s: %s\n",
+			    server->listen_addr_unix.sun_path, spdk_strerror(errno));
+		spdk_jsonrpc_server_shutdown(server->jsonrpc_server);
+		server->jsonrpc_server = NULL;
+		unlink(server->listen_addr_unix.sun_path);
+		server->listen_addr_unix.sun_path[0] = '\0';
+		close(server->lock_fd);
+		server->lock_fd = -1;
+		unlink(server->lock_path);
+		server->lock_path[0] = '\0';
 		goto ret;
 	}
 

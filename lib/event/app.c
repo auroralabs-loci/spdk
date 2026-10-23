@@ -808,6 +808,53 @@ error:
 	return -1;
 }
 
+/*
+ * The core lock file paths are predictable and live in a world-writable
+ * directory, so only trust a regular file owned by the current user:
+ * open it with O_NOFOLLOW and remove/recreate anything else (limited
+ * retries).
+ */
+static int
+cpu_lock_open(const char *core_name)
+{
+	struct stat st;
+	int fd;
+	int i;
+
+	for (i = 0; i < 3; i++) {
+		fd = open(core_name, O_RDWR | O_CREAT | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+		if (fd == -1) {
+			/* ELOOP: the path is a symlink. EACCES: the file is
+			 * owned by another user, so the kernel refused to
+			 * open it with O_CREAT. */
+			if (errno != ELOOP && errno != EACCES) {
+				SPDK_ERRLOG("Could not open %s (%s).\n", core_name, spdk_strerror(errno));
+				return -1;
+			}
+		} else if (fstat(fd, &st) != 0) {
+			SPDK_ERRLOG("Could not stat %s (%s).\n", core_name, spdk_strerror(errno));
+			close(fd);
+			return -1;
+		} else if (S_ISREG(st.st_mode) && st.st_uid == geteuid()) {
+			return fd;
+		} else {
+			SPDK_NOTICELOG("Core lock file %s is not owned by the current user\n",
+				       core_name);
+			close(fd);
+		}
+
+		if (unlink(core_name) != 0) {
+			SPDK_ERRLOG("Could not remove untrusted core lock file %s (%s).\n",
+				    core_name, spdk_strerror(errno));
+			return -1;
+		}
+		SPDK_NOTICELOG("Removed untrusted core lock file %s\n", core_name);
+	}
+
+	SPDK_ERRLOG("Could not create a trustworthy core lock file at %s\n", core_name);
+	return -1;
+}
+
 static int
 claim_cpu_cores(uint32_t *failed_core)
 {
@@ -830,9 +877,8 @@ claim_cpu_cores(uint32_t *failed_core)
 		}
 
 		snprintf(core_name, sizeof(core_name), "/var/tmp/spdk_cpu_lock_%03d", core);
-		core_fd = open(core_name, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+		core_fd = cpu_lock_open(core_name);
 		if (core_fd == -1) {
-			SPDK_ERRLOG("Could not open %s (%s).\n", core_name, spdk_strerror(errno));
 			/* Return number of core we failed to claim. */
 			goto error;
 		}
