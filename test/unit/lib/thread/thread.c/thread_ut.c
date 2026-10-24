@@ -2271,6 +2271,88 @@ channel_create_cb_failed(void)
 	free_threads();
 }
 
+/* The thread each message ran on, in the order the messages were received. */
+static int g_broadcast_msg_threads[10];
+static int g_broadcast_msg_count;
+
+static void
+broadcast_msg_fn(struct spdk_io_channel *ch, void *ctx)
+{
+	struct spdk_thread *thread = spdk_get_thread();
+	uint32_t i;
+
+	/* Find which thread this is by comparing with g_ut_threads */
+	for (i = 0; i < g_ut_num_threads; i++) {
+		if (g_ut_threads[i].thread == thread) {
+			SPDK_CU_ASSERT_FATAL(g_broadcast_msg_count < (int)SPDK_COUNTOF(g_broadcast_msg_threads));
+			g_broadcast_msg_threads[g_broadcast_msg_count++] = i;
+			break;
+		}
+	}
+}
+
+static void
+for_each_channel_broadcast_test(void)
+{
+	struct spdk_io_channel *ch0, *ch1, *ch2;
+	int ch_count = 0;
+	int i;
+
+	allocate_threads(3);
+	set_thread(0);
+	spdk_io_device_register(&ch_count, channel_create, channel_destroy, sizeof(int), NULL);
+	ch0 = spdk_get_io_channel(&ch_count);
+	set_thread(1);
+	ch1 = spdk_get_io_channel(&ch_count);
+	set_thread(2);
+	ch2 = spdk_get_io_channel(&ch_count);
+	CU_ASSERT(ch_count == 3);
+
+	/* Test basic broadcast - all channels should receive the message */
+	g_broadcast_msg_count = 0;
+	memset(g_broadcast_msg_threads, 0, sizeof(g_broadcast_msg_threads));
+
+	set_thread(0);
+	spdk_for_each_channel_broadcast(&ch_count, broadcast_msg_fn, NULL);
+	poll_threads();
+
+	/* All three threads should have received the message */
+	CU_ASSERT(g_broadcast_msg_count == 3);
+	/* Messages are received in thread poll order: 0, 1, 2 */
+	for (i = 0; i < 3; i++) {
+		CU_ASSERT(g_broadcast_msg_threads[i] == i);
+	}
+
+	/* Test broadcast after removing a channel */
+	set_thread(1);
+	spdk_put_io_channel(ch1);
+	poll_threads();
+	CU_ASSERT(ch_count == 2);
+
+	g_broadcast_msg_count = 0;
+	memset(g_broadcast_msg_threads, 0, sizeof(g_broadcast_msg_threads));
+
+	set_thread(0);
+	spdk_for_each_channel_broadcast(&ch_count, broadcast_msg_fn, NULL);
+	poll_threads();
+
+	/* Only threads 0 and 2 should receive messages (thread 1 has no channel) */
+	CU_ASSERT(g_broadcast_msg_count == 2);
+	CU_ASSERT(g_broadcast_msg_threads[0] == 0);
+	CU_ASSERT(g_broadcast_msg_threads[1] == 2);
+
+	set_thread(0);
+	spdk_put_io_channel(ch0);
+	set_thread(2);
+	spdk_put_io_channel(ch2);
+	poll_threads();
+
+	spdk_io_device_unregister(&ch_count, NULL);
+	poll_threads();
+
+	free_threads();
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2307,6 +2389,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, poller_get_period_ticks);
 	CU_ADD_TEST(suite, poller_get_stats);
 	CU_ADD_TEST(suite, channel_create_cb_failed);
+	CU_ADD_TEST(suite, for_each_channel_broadcast_test);
 
 	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
