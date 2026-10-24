@@ -20,6 +20,10 @@ nvme_io_msg_send(struct spdk_nvme_ctrlr *ctrlr, uint32_t nsid, spdk_nvme_io_msg_
 
 	/* Protect requests ring against preemptive producers */
 	pthread_mutex_lock(&ctrlr->external_io_msgs_lock);
+	if (!ctrlr->external_io_msgs) {
+		pthread_mutex_unlock(&ctrlr->external_io_msgs_lock);
+		return -ENXIO;
+	}
 
 	io = (struct spdk_nvme_io_msg *)calloc(1, sizeof(struct spdk_nvme_io_msg));
 	if (!io) {
@@ -117,7 +121,7 @@ nvme_io_msg_ctrlr_register(struct spdk_nvme_ctrlr *ctrlr,
 		return -EEXIST;
 	}
 
-	if (!STAILQ_EMPTY(&ctrlr->io_producers) || ctrlr->is_resetting) {
+	if (ctrlr->external_io_msgs != NULL) {
 		/* There are registered producers - IO messaging already started */
 		STAILQ_INSERT_TAIL(&ctrlr->io_producers, io_msg_producer, link);
 		nvme_ctrlr_unlock(ctrlr);
@@ -132,6 +136,7 @@ nvme_io_msg_ctrlr_register(struct spdk_nvme_ctrlr *ctrlr,
 	ctrlr->external_io_msgs = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 65536, SPDK_ENV_NUMA_ID_ANY);
 	if (!ctrlr->external_io_msgs) {
 		NVME_CTRLR_ERRLOG(ctrlr, "Unable to allocate memory for message ring\n");
+		pthread_mutex_destroy(&ctrlr->external_io_msgs_lock);
 		nvme_ctrlr_unlock(ctrlr);
 		return -ENOMEM;
 	}
@@ -141,6 +146,7 @@ nvme_io_msg_ctrlr_register(struct spdk_nvme_ctrlr *ctrlr,
 		NVME_CTRLR_ERRLOG(ctrlr, "spdk_nvme_ctrlr_alloc_io_qpair() failed\n");
 		spdk_ring_free(ctrlr->external_io_msgs);
 		ctrlr->external_io_msgs = NULL;
+		pthread_mutex_destroy(&ctrlr->external_io_msgs_lock);
 		nvme_ctrlr_unlock(ctrlr);
 		return -ENOMEM;
 	}
@@ -185,6 +191,10 @@ nvme_io_msg_ctrlr_detach(struct spdk_nvme_ctrlr *ctrlr)
 	}
 
 	if (ctrlr->external_io_msgs) {
+		struct spdk_nvme_io_msg *pending_io;
+		while (spdk_ring_dequeue(ctrlr->external_io_msgs, (void **)&pending_io, 1) == 1) {
+			free(pending_io);
+		}
 		spdk_ring_free(ctrlr->external_io_msgs);
 		ctrlr->external_io_msgs = NULL;
 	}
