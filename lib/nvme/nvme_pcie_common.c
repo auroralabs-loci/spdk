@@ -833,7 +833,7 @@ nvme_pcie_qpair_abort_reqs(struct spdk_nvme_qpair *qpair, uint32_t dnr)
 static void
 nvme_pcie_qpair_check_timeout(struct spdk_nvme_qpair *qpair)
 {
-	uint64_t t02;
+	uint64_t t02, timeout_ticks;
 	struct nvme_tracker *tr, *tmp;
 	struct nvme_pcie_qpair *pqpair = nvme_pcie_qpair(qpair);
 	struct spdk_nvme_ctrlr *ctrlr = qpair->ctrlr;
@@ -856,10 +856,11 @@ nvme_pcie_qpair_check_timeout(struct spdk_nvme_qpair *qpair)
 	}
 
 	t02 = spdk_get_ticks();
+	timeout_ticks = nvme_qpair_get_timeout_ticks(qpair, active_proc);
 	TAILQ_FOREACH_SAFE(tr, &pqpair->outstanding_tr, tq_list, tmp) {
 		assert(tr->req != NULL);
 
-		if (nvme_request_check_timeout(tr->req, tr->cid, active_proc, t02)) {
+		if (nvme_request_check_timeout(tr->req, tr->cid, active_proc, timeout_ticks, t02)) {
 			/*
 			 * The requests are in order, so as soon as one has not timed out,
 			 * stop iterating.

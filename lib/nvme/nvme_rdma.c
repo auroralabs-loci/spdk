@@ -3156,7 +3156,7 @@ nvme_rdma_qpair_abort_reqs(struct spdk_nvme_qpair *qpair, uint32_t dnr)
 static void
 nvme_rdma_qpair_check_timeout(struct spdk_nvme_qpair *qpair)
 {
-	uint64_t t02;
+	uint64_t t02, timeout_ticks;
 	struct spdk_nvme_rdma_req *rdma_req, *tmp;
 	struct nvme_rdma_qpair *rqpair = nvme_rdma_qpair(qpair);
 	struct spdk_nvme_ctrlr *ctrlr = qpair->ctrlr;
@@ -3179,10 +3179,12 @@ nvme_rdma_qpair_check_timeout(struct spdk_nvme_qpair *qpair)
 	}
 
 	t02 = spdk_get_ticks();
+	timeout_ticks = nvme_qpair_get_timeout_ticks(qpair, active_proc);
 	TAILQ_FOREACH_SAFE(rdma_req, &rqpair->outstanding_reqs, link, tmp) {
 		assert(rdma_req->req != NULL);
 
-		if (nvme_request_check_timeout(rdma_req->req, rdma_req->id, active_proc, t02)) {
+		if (nvme_request_check_timeout(rdma_req->req, rdma_req->id, active_proc, timeout_ticks,
+					       t02)) {
 			/*
 			 * The requests are in order, so as soon as one has not timed out,
 			 * stop iterating.

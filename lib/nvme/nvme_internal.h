@@ -1355,6 +1355,14 @@ nvme_qpair_is_io_queue(struct spdk_nvme_qpair *qpair)
 	return qpair->id != 0;
 }
 
+static inline uint64_t
+nvme_qpair_get_timeout_ticks(struct spdk_nvme_qpair *qpair,
+			     struct spdk_nvme_ctrlr_process *active_proc)
+{
+	return nvme_qpair_is_admin_queue(qpair) ? active_proc->timeout_admin_ticks :
+	       active_proc->timeout_io_ticks;
+}
+
 static inline int
 nvme_robust_mutex_lock(pthread_mutex_t *mtx)
 {
@@ -1930,7 +1938,8 @@ nvme_request_free_children(struct nvme_request *req)
 }
 
 int	nvme_request_check_timeout(struct nvme_request *req, uint16_t cid,
-				   struct spdk_nvme_ctrlr_process *active_proc, uint64_t now_tick);
+				   struct spdk_nvme_ctrlr_process *active_proc,
+				   uint64_t timeout_ticks, uint64_t now_tick);
 uint64_t nvme_get_quirks(const struct spdk_pci_id *id);
 
 int	nvme_robust_mutex_init_shared(pthread_mutex_t *mtx);

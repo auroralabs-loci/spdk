@@ -1332,25 +1332,28 @@ test_nvme_request_check_timeout(void)
 	struct spdk_nvme_qpair qpair;
 	struct nvme_request req;
 	struct spdk_nvme_ctrlr_process active_proc;
+	struct spdk_nvme_ctrlr ctrlr;
 	uint16_t cid = 0;
 	uint64_t now_tick = 0;
 
 	memset(&qpair, 0x0, sizeof(qpair));
 	memset(&req, 0x0, sizeof(req));
 	memset(&active_proc, 0x0, sizeof(active_proc));
+	memset(&ctrlr, 0x0, sizeof(ctrlr));
+	qpair.ctrlr = &ctrlr;
 	req.qpair = &qpair;
 	active_proc.timeout_cb_fn = dummy_timeout_cb;
 
 	/* if have called timeout_cb_fn then return directly */
 	req.timed_out = true;
-	rc = nvme_request_check_timeout(&req, cid, &active_proc, now_tick);
+	rc = nvme_request_check_timeout(&req, cid, &active_proc, 0, now_tick);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(ut_timeout_cb_call == false);
 
 	/* if timeout isn't enabled then return directly */
 	req.timed_out = false;
 	req.submit_tick = 0;
-	rc = nvme_request_check_timeout(&req, cid, &active_proc, now_tick);
+	rc = nvme_request_check_timeout(&req, cid, &active_proc, 0, now_tick);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(ut_timeout_cb_call == false);
 
@@ -1358,28 +1361,63 @@ test_nvme_request_check_timeout(void)
 	qpair.id = 0;
 	req.submit_tick = 1;
 	req.pid = g_spdk_nvme_pid + 1;
-	rc = nvme_request_check_timeout(&req, cid, &active_proc, now_tick);
+	rc = nvme_request_check_timeout(&req, cid, &active_proc, 0, now_tick);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(ut_timeout_cb_call == false);
 
 	/* AER command has no timeout */
 	req.pid = g_spdk_nvme_pid;
 	req.cmd.opc = SPDK_NVME_OPC_ASYNC_EVENT_REQUEST;
-	rc = nvme_request_check_timeout(&req, cid, &active_proc, now_tick);
+	rc = nvme_request_check_timeout(&req, cid, &active_proc, 0, now_tick);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(ut_timeout_cb_call == false);
 
+	/* Keep Alive uses the keep alive timeout instead of the passed timeout */
+	MOCK_SET(spdk_get_ticks_hz, 1000);
+	ctrlr.opts.keep_alive_timeout_ms = 10;
+	req.cmd.opc = SPDK_NVME_OPC_KEEP_ALIVE;
+	now_tick = 10;
+	rc = nvme_request_check_timeout(&req, cid, &active_proc, 0, now_tick);
+	CU_ASSERT(rc == 1);
+	CU_ASSERT(req.timed_out == false);
+	CU_ASSERT(ut_timeout_cb_call == false);
+
+	now_tick = 11;
+	rc = nvme_request_check_timeout(&req, cid, &active_proc, 0, now_tick);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(req.timed_out == true);
+	CU_ASSERT(ut_timeout_cb_call == true);
+	MOCK_CLEAR(spdk_get_ticks_hz);
+
+	req.timed_out = false;
+	req.cmd.opc = 0;
+	ut_timeout_cb_call = false;
+	now_tick = 0;
+
 	/* time isn't out */
 	qpair.id = 1;
-	rc = nvme_request_check_timeout(&req, cid, &active_proc, now_tick);
+	rc = nvme_request_check_timeout(&req, cid, &active_proc, 0, now_tick);
 	CU_ASSERT(rc == 1);
 	CU_ASSERT(ut_timeout_cb_call == false);
 
 	now_tick = 2;
-	rc = nvme_request_check_timeout(&req, cid, &active_proc, now_tick);
+	rc = nvme_request_check_timeout(&req, cid, &active_proc, 0, now_tick);
 	CU_ASSERT(req.timed_out == true);
 	CU_ASSERT(ut_timeout_cb_call == true);
 	CU_ASSERT(rc == 0);
+
+	/* the passed timeout is used for I/O queues */
+	req.timed_out = false;
+	ut_timeout_cb_call = false;
+	rc = nvme_request_check_timeout(&req, cid, &active_proc, 2, now_tick);
+	CU_ASSERT(rc == 1);
+	CU_ASSERT(ut_timeout_cb_call == false);
+
+	now_tick = 3;
+	rc = nvme_request_check_timeout(&req, cid, &active_proc, 2, now_tick);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(req.timed_out == true);
+	CU_ASSERT(ut_timeout_cb_call == true);
 }
 
 struct nvme_completion_poll_status g_status;

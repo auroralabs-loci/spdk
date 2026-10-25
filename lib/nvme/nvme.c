@@ -401,6 +401,7 @@ nvme_allocate_request_user_copy(struct spdk_nvme_qpair *qpair,
  * \param req request to check for timeout.
  * \param cid command ID for command submitted by req (will be passed to timeout_cb_fn)
  * \param active_proc per-process data for the controller associated with req
+ * \param timeout_ticks timeout for the queue of req from nvme_qpair_get_timeout_ticks()
  * \param now_tick current time from spdk_get_ticks()
  * \return 0 if requests submitted more recently than req should still be checked for timeouts, or
  * 1 if requests newer than req need not be checked.
@@ -411,11 +412,10 @@ nvme_allocate_request_user_copy(struct spdk_nvme_qpair *qpair,
 int
 nvme_request_check_timeout(struct nvme_request *req, uint16_t cid,
 			   struct spdk_nvme_ctrlr_process *active_proc,
-			   uint64_t now_tick)
+			   uint64_t timeout_ticks, uint64_t now_tick)
 {
 	struct spdk_nvme_qpair *qpair = req->qpair;
 	struct spdk_nvme_ctrlr *ctrlr = qpair->ctrlr;
-	uint64_t timeout_ticks = active_proc->timeout_io_ticks;
 
 	assert(active_proc->timeout_cb_fn != NULL);
 
@@ -424,7 +424,6 @@ nvme_request_check_timeout(struct nvme_request *req, uint16_t cid,
 			return 0;
 		}
 
-		timeout_ticks = active_proc->timeout_admin_ticks;
 		if (req->cmd.opc == SPDK_NVME_OPC_KEEP_ALIVE && ctrlr->opts.keep_alive_timeout_ms) {
 			timeout_ticks = ctrlr->opts.keep_alive_timeout_ms * spdk_get_ticks_hz() / SPDK_SEC_TO_MSEC;
 		}

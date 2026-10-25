@@ -59,7 +59,8 @@ spdk_nvme_transport_id_populate_trstring(struct spdk_nvme_transport_id *trid, co
 }
 
 DEFINE_STUB(nvme_request_check_timeout, int, (struct nvme_request *req, uint16_t cid,
-		struct spdk_nvme_ctrlr_process *active_proc, uint64_t now_tick), 0);
+		struct spdk_nvme_ctrlr_process *active_proc, uint64_t timeout_ticks,
+		uint64_t now_tick), 0);
 DEFINE_STUB_V(nvme_ctrlr_destruct_finish, (struct spdk_nvme_ctrlr *ctrlr));
 DEFINE_STUB(nvme_ctrlr_construct, int, (struct spdk_nvme_ctrlr *ctrlr), 0);
 DEFINE_STUB_V(nvme_ctrlr_destruct, (struct spdk_nvme_ctrlr *ctrlr));

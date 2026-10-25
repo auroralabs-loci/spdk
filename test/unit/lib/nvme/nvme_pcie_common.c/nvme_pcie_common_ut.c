@@ -44,7 +44,8 @@ DEFINE_STUB(spdk_nvme_qpair_process_completions, int32_t,
 	    (struct spdk_nvme_qpair *qpair, uint32_t max_completions), 0);
 
 DEFINE_STUB(nvme_request_check_timeout, int, (struct nvme_request *req, uint16_t cid,
-		struct spdk_nvme_ctrlr_process *active_proc, uint64_t now_tick), 0);
+		struct spdk_nvme_ctrlr_process *active_proc, uint64_t timeout_ticks,
+		uint64_t now_tick), 0);
 DEFINE_STUB(spdk_strerror, const char *, (int errnum), NULL);
 
 static int g_nvme_ctrlr_disable_calls;

@@ -2336,7 +2336,7 @@ nvme_tcp_read_pdu(struct nvme_tcp_qpair *tqpair, uint32_t *reaped, uint32_t max_
 static void
 nvme_tcp_qpair_check_timeout(struct spdk_nvme_qpair *qpair)
 {
-	uint64_t t02;
+	uint64_t t02, timeout_ticks;
 	struct nvme_tcp_req *tcp_req, *tmp;
 	struct nvme_tcp_qpair *tqpair = nvme_tcp_qpair(qpair);
 	struct spdk_nvme_ctrlr *ctrlr = qpair->ctrlr;
@@ -2359,6 +2359,7 @@ nvme_tcp_qpair_check_timeout(struct spdk_nvme_qpair *qpair)
 	}
 
 	t02 = spdk_get_ticks();
+	timeout_ticks = nvme_qpair_get_timeout_ticks(qpair, active_proc);
 	TAILQ_FOREACH_SAFE(tcp_req, &tqpair->outstanding_reqs, link, tmp) {
 		if (spdk_unlikely(ctrlr->is_failed)) {
 			/* The controller state may be changed to failed in one of the nvme_request_check_timeout callbacks. */
@@ -2366,7 +2367,8 @@ nvme_tcp_qpair_check_timeout(struct spdk_nvme_qpair *qpair)
 		}
 		assert(tcp_req->req != NULL);
 
-		if (spdk_likely(nvme_request_check_timeout(tcp_req->req, tcp_req->cid, active_proc, t02))) {
+		if (spdk_likely(nvme_request_check_timeout(tcp_req->req, tcp_req->cid, active_proc,
+				timeout_ticks, t02))) {
 			/*
 			 * The requests are in order, so as soon as one has not timed out,
 			 * stop iterating.
