@@ -1210,8 +1210,8 @@ nvme_ctrlr_fail(struct spdk_nvme_ctrlr *ctrlr, bool hot_remove)
 	}
 
 	ctrlr->is_failed = true;
-	nvme_ctrlr_set_state(ctrlr, NVME_CTRLR_STATE_ERROR, NVME_TIMEOUT_INFINITE);
 	nvme_transport_ctrlr_disconnect_qpair(ctrlr, ctrlr->adminq);
+	nvme_ctrlr_set_state(ctrlr, NVME_CTRLR_STATE_ERROR, NVME_TIMEOUT_INFINITE);
 	NVME_CTRLR_ERRLOG(ctrlr, "in failed state.\n");
 }
 
@@ -2004,6 +2004,10 @@ spdk_nvme_ctrlr_reconnect_poll_async(struct spdk_nvme_ctrlr *ctrlr)
 		}
 	}
 
+	if (rc) {
+		nvme_ctrlr_fail(ctrlr, false);
+	}
+
 	/*
 	 * Take this opportunity to remove inactive namespaces. During a reset namespace
 	 * handles can be invalidated.
@@ -2014,9 +2018,6 @@ spdk_nvme_ctrlr_reconnect_poll_async(struct spdk_nvme_ctrlr *ctrlr)
 		}
 	}
 
-	if (rc) {
-		nvme_ctrlr_fail(ctrlr, false);
-	}
 	ctrlr->is_resetting = false;
 
 	nvme_ctrlr_unlock(ctrlr);
