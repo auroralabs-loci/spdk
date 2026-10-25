@@ -1415,25 +1415,30 @@ _vbdev_lvol_resize_cb(void *cb_arg, int lvolerrno)
 {
 	struct spdk_lvol_req *req = cb_arg;
 	struct spdk_lvol *lvol = req->lvol;
-	uint64_t total_size;
-
-	/* change bdev size */
-	if (lvolerrno != 0) {
-		SPDK_ERRLOG("CB function for bdev lvol %s receive error no: %d.\n", lvol->name, lvolerrno);
-		goto finish;
-	}
+	uint64_t total_size, blockcnt;
+	int rc;
 
 	total_size = spdk_blob_get_num_clusters(lvol->blob) *
 		     spdk_bs_get_cluster_size(lvol->lvol_store->blobstore);
 	assert((total_size % lvol->bdev->blocklen) == 0);
 
-	lvolerrno = spdk_bdev_notify_blockcnt_change(lvol->bdev, total_size / lvol->bdev->blocklen);
+	/* change bdev size */
+	blockcnt = total_size / lvol->bdev->blocklen;
 	if (lvolerrno != 0) {
-		SPDK_ERRLOG("Could not change num blocks for bdev lvol %s with error no: %d.\n",
-			    lvol->name, lvolerrno);
+		SPDK_ERRLOG("Callback for bdev lvol %s received error %d\n", lvol->name, lvolerrno);
+		/* The blob was not resized; restore the published size. */
+		blockcnt = spdk_min(blockcnt, req->blockcnt);
 	}
 
-finish:
+	rc = spdk_bdev_notify_blockcnt_change(lvol->bdev, blockcnt);
+	if (rc != 0) {
+		SPDK_ERRLOG("Could not change num blocks for bdev lvol %s with error %d\n",
+			    lvol->name, rc);
+		if (lvolerrno == 0) {
+			lvolerrno = rc;
+		}
+	}
+
 	req->cb_fn(req->cb_arg, lvolerrno);
 	free(req);
 }
@@ -1442,6 +1447,10 @@ void
 vbdev_lvol_resize(struct spdk_lvol *lvol, uint64_t sz, spdk_lvol_op_complete cb_fn, void *cb_arg)
 {
 	struct spdk_lvol_req *req;
+	struct spdk_bdev *bdev;
+	uint64_t cluster_size;
+	uint64_t new_blockcnt;
+	int rc;
 
 	if (lvol == NULL) {
 		SPDK_ERRLOG("lvol does not exist\n");
@@ -1450,6 +1459,9 @@ vbdev_lvol_resize(struct spdk_lvol *lvol, uint64_t sz, spdk_lvol_op_complete cb_
 	}
 
 	assert(lvol->bdev != NULL);
+	bdev = lvol->bdev;
+	cluster_size = spdk_bs_get_cluster_size(lvol->lvol_store->blobstore);
+	new_blockcnt = spdk_divide_round_up(sz, cluster_size) * cluster_size / bdev->blocklen;
 
 	req = calloc(1, sizeof(*req));
 	if (req == NULL) {
@@ -1461,6 +1473,22 @@ vbdev_lvol_resize(struct spdk_lvol *lvol, uint64_t sz, spdk_lvol_op_complete cb_
 	req->cb_arg = cb_arg;
 	req->sz = sz;
 	req->lvol = lvol;
+	req->blockcnt = spdk_bdev_get_num_blocks(bdev);
+
+	/*
+	 * A shrink is only rejected after the blob has been truncated, so
+	 * publish the new size first to keep the blob untouched on rejection.
+	 */
+	if (new_blockcnt < req->blockcnt) {
+		rc = spdk_bdev_notify_blockcnt_change(bdev, new_blockcnt);
+		if (rc != 0) {
+			SPDK_ERRLOG("Could not change num blocks for bdev lvol %s with error %d\n",
+				    lvol->name, rc);
+			cb_fn(cb_arg, rc);
+			free(req);
+			return;
+		}
+	}
 
 	spdk_lvol_resize(req->lvol, req->sz, _vbdev_lvol_resize_cb, req);
 }
