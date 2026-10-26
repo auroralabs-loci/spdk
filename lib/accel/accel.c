@@ -2594,6 +2594,9 @@ accel_sequence_merge_tasks(struct spdk_accel_sequence *seq, struct spdk_accel_ta
 		*next_task = TAILQ_NEXT(next, seq_link);
 		accel_sequence_complete_task(seq, next);
 		break;
+	case SPDK_ACCEL_OPC_DIF_VERIFY:
+		/* no dst buffer to fold a copy into. */
+		break;
 	default:
 		assert(0 && "bad opcode");
 		break;
