@@ -41,6 +41,7 @@ DEFINE_STUB(spdk_sock_group_get_ctx,
 	    void *,
 	    (struct spdk_sock_group *group),
 	    NULL);
+DEFINE_STUB(spdk_sock_group_get_interruptfd, int, (struct spdk_sock_group *group), 0);
 DEFINE_STUB(spdk_sock_get_numa_id, int32_t, (struct spdk_sock *sock), SPDK_ENV_NUMA_ID_ANY);
 
 DEFINE_STUB(spdk_nvme_poll_group_process_completions, int64_t, (struct spdk_nvme_poll_group *group,
@@ -1508,6 +1509,7 @@ test_nvme_tcp_ctrlr_connect_qpair(void)
 	int rc;
 
 	tqpair = calloc(1, sizeof(*tqpair));
+	tqpair->wake_fd = -1;
 	tqpair->qpair.trtype = SPDK_NVME_TRANSPORT_TCP;
 	tqpair->recv_pdu = &recv_pdu;
 	qpair = &tqpair->qpair;
@@ -1827,6 +1829,7 @@ test_nvme_tcp_ctrlr_delete_io_qpair(void)
 	int rc;
 
 	tqpair = calloc(1, sizeof(struct nvme_tcp_qpair));
+	tqpair->wake_fd = -1;
 	tqpair->tcp_reqs = calloc(1, sizeof(struct nvme_tcp_req));
 	tqpair->send_pdus = calloc(1, sizeof(struct nvme_tcp_pdu));
 	tqpair->qpair.trtype = SPDK_NVME_TRANSPORT_TCP;
@@ -2158,6 +2161,7 @@ ut_nvme_tcp_private_group_delete(bool async)
 
 	tqpair = calloc(1, sizeof(*tqpair));
 	SPDK_CU_ASSERT_FATAL(tqpair != NULL);
+	tqpair->wake_fd = -1;
 	tqpair->qpair.ctrlr = &ctrlr;
 	tqpair->qpair.state = NVME_QPAIR_CONNECTED;
 	tqpair->qpair.trtype = SPDK_NVME_TRANSPORT_TCP;
@@ -2206,6 +2210,7 @@ test_nvme_tcp_shared_group_delete(void)
 	SPDK_CU_ASSERT_FATAL(group != NULL);
 	tqpair = calloc(1, sizeof(*tqpair));
 	SPDK_CU_ASSERT_FATAL(tqpair != NULL);
+	tqpair->wake_fd = -1;
 	tqpair->qpair.ctrlr = &tctrlr.ctrlr;
 	tqpair->qpair.trtype = SPDK_NVME_TRANSPORT_TCP;
 	tqpair->qpair.id = 1;
@@ -2232,6 +2237,92 @@ test_nvme_tcp_shared_group_delete(void)
 	CU_ASSERT_EQUAL(spdk_sock_group_poll(group->sock_group), 0);
 	CU_ASSERT_EQUAL(nvme_tcp_poll_group_destroy(&group->group), 0);
 }
+
+#ifdef __linux__
+static void
+test_nvme_tcp_interrupt_mode(void)
+{
+	struct nvme_tcp_ctrlr tctrlr = {};
+	struct spdk_nvme_ctrlr *ctrlr = &tctrlr.ctrlr;
+	struct spdk_nvme_io_qpair_opts opts = {
+		.io_queue_size = 2,
+		.qprio = SPDK_NVME_QPRIO_URGENT,
+		.io_queue_requests = 1,
+	};
+	struct spdk_nvme_qpair *qpair;
+	struct nvme_tcp_qpair *tqpair;
+	int fake_sock_fd, fd, rc;
+	uint64_t drain;
+
+	ctrlr->trid.adrfam = SPDK_NVMF_ADRFAM_IPV4;
+	snprintf(ctrlr->trid.traddr, sizeof(ctrlr->trid.traddr), "192.168.1.78");
+	snprintf(ctrlr->trid.trsvcid, sizeof(ctrlr->trid.trsvcid), "23");
+
+	/* The qpair's fd_group adds the sock group's interruptfd, so provide a real fd
+	 * that spdk_fd_group_add can accept.
+	 */
+	fake_sock_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	SPDK_CU_ASSERT_FATAL(fake_sock_fd >= 0);
+	MOCK_SET(spdk_sock_group_get_interruptfd, fake_sock_fd);
+
+	ctrlr->opts.enable_interrupts = true;
+	qpair = nvme_tcp_ctrlr_create_io_qpair(ctrlr, 1, &opts);
+	SPDK_CU_ASSERT_FATAL(qpair != NULL);
+	tqpair = nvme_tcp_qpair(qpair);
+	SPDK_CU_ASSERT_FATAL(tqpair->sock_group != NULL);
+	SPDK_CU_ASSERT_FATAL(tqpair->fgrp != NULL);
+	SPDK_CU_ASSERT_FATAL(tqpair->wake_fd >= 0);
+
+	/* get_fd returns the qpair's fd_group epoll fd. */
+	fd = nvme_tcp_qpair_get_fd(qpair, NULL);
+	CU_ASSERT(fd >= 0);
+	CU_ASSERT(fd != fake_sock_fd && fd != tqpair->wake_fd);
+
+	/* Reject a socket implementation that cannot wake the group interrupt fd. */
+	MOCK_SET(spdk_sock_get_default_impl, "uring");
+	rc = nvme_tcp_qpair_connect_sock(ctrlr, qpair);
+	CU_ASSERT_EQUAL(rc, -ENOTSUP);
+	CU_ASSERT_PTR_NULL(tqpair->sock);
+	MOCK_SET(spdk_sock_get_default_impl, "posix");
+
+	/* The qpair-owned fd_group survives disconnect and reconnect. */
+	rc = nvme_tcp_qpair_connect_sock(ctrlr, qpair);
+	CU_ASSERT_EQUAL(rc, 0);
+	CU_ASSERT(tqpair->sock != NULL);
+	nvme_qpair_set_state(qpair, NVME_QPAIR_CONNECTED);
+	nvme_ctrlr_disconnect_qpair_mocked(qpair);
+	CU_ASSERT_PTR_NULL(tqpair->sock);
+	CU_ASSERT_PTR_NOT_NULL(tqpair->sock_group);
+	CU_ASSERT_PTR_NOT_NULL(tqpair->fgrp);
+	CU_ASSERT_EQUAL(nvme_tcp_qpair_get_fd(qpair, NULL), fd);
+
+	/* A partial send sets needs_flush and makes wake_fd readable, once. */
+	tqpair->sock = (struct spdk_sock *)0xDEADBEEF;
+	MOCK_SET(spdk_sock_flush, -EAGAIN);
+	CU_ASSERT_EQUAL(nvme_tcp_qpair_flush(tqpair), 0);
+	CU_ASSERT(tqpair->flags.needs_flush);
+	CU_ASSERT(tqpair->wake_pending);
+	CU_ASSERT_EQUAL(nvme_tcp_qpair_flush(tqpair), 0);
+	CU_ASSERT(tqpair->wake_pending);
+
+	/* A successful flush clears needs_flush; wake_fd stays readable until drained. */
+	MOCK_SET(spdk_sock_flush, 0);
+	CU_ASSERT_EQUAL(nvme_tcp_qpair_flush(tqpair), 0);
+	CU_ASSERT(!tqpair->flags.needs_flush);
+	CU_ASSERT(tqpair->wake_pending);
+
+	/* process_completions() drains wake_fd. */
+	tqpair->sock = NULL;
+	CU_ASSERT_EQUAL(nvme_tcp_qpair_process_completions(qpair, 0), -ENXIO);
+	CU_ASSERT(!tqpair->wake_pending);
+	CU_ASSERT_EQUAL(read(tqpair->wake_fd, &drain, sizeof(drain)), -1);
+	CU_ASSERT_EQUAL(errno, EAGAIN);
+
+	CU_ASSERT_EQUAL(nvme_tcp_ctrlr_delete_io_qpair(ctrlr, qpair), 0);
+	MOCK_SET(spdk_sock_group_get_interruptfd, 0);
+	close(fake_sock_fd);
+}
+#endif
 
 int
 main(int argc, char **argv)
@@ -2273,6 +2364,9 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvme_tcp_private_admin_groups);
 	CU_ADD_TEST(suite, test_nvme_tcp_private_group_delete);
 	CU_ADD_TEST(suite, test_nvme_tcp_shared_group_delete);
+#ifdef __linux__
+	CU_ADD_TEST(suite, test_nvme_tcp_interrupt_mode);
+#endif
 
 	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();

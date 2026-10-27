@@ -7199,10 +7199,11 @@ spdk_bdev_nvme_create(struct spdk_nvme_transport_id *trid,
 
 	if (spdk_interrupt_mode_is_enabled()) {
 		if (trid->trtype == SPDK_NVME_TRANSPORT_PCIE ||
-		    trid->trtype == SPDK_NVME_TRANSPORT_RDMA) {
+		    trid->trtype == SPDK_NVME_TRANSPORT_RDMA ||
+		    trid->trtype == SPDK_NVME_TRANSPORT_TCP) {
 			ctx->drv_opts.enable_interrupts = true;
 		} else {
-			SPDK_ERRLOG("Interrupt mode is only supported with PCIe and RDMA transports\n");
+			SPDK_ERRLOG("Interrupt mode is only supported with PCIe, RDMA and TCP\n");
 			free_nvme_async_probe_ctx(ctx);
 			return -ENOTSUP;
 		}

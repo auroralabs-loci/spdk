@@ -3792,7 +3792,8 @@ probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 
 	if (g_enable_interrupt &&
 	    (trid->trtype == SPDK_NVME_TRANSPORT_PCIE ||
-	     trid->trtype == SPDK_NVME_TRANSPORT_RDMA)) {
+	     trid->trtype == SPDK_NVME_TRANSPORT_RDMA ||
+	     trid->trtype == SPDK_NVME_TRANSPORT_TCP)) {
 		opts->enable_interrupts = true;
 	}
 
