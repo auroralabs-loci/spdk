@@ -1479,6 +1479,7 @@ vfu_virtio_attach_device(struct spdk_vfu_endpoint *endpoint)
 
 out:
 	vfu_virtio_dev_free_reqs(virtio_endpoint, dev);
+	free(dev);
 	return ret;
 }
 
