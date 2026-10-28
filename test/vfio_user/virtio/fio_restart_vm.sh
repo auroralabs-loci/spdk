@@ -16,6 +16,7 @@ fallocate -l 1G $aio_file
 rpc_py="$rootdir/scripts/rpc.py -s $(get_vhost_dir 0)/rpc.sock"
 
 virtio_type=$1
+ring_opt=$(vfu_virtio_ring_opt "${2:-packed}")
 if [[ $virtio_type != virtio_blk ]] && [[ $virtio_type != virtio_scsi ]]; then
 	echo "Unsupported device type"
 	exit 1
@@ -44,9 +45,9 @@ vm_num="1"
 $rpc_py vfu_tgt_set_base_path $vfu_vm_dir
 
 if [[ "$virtio_type" == "virtio_blk" ]]; then
-	$rpc_py vfu_virtio_create_blk_endpoint virtio.$disk_no --bdev-name Nvme0n1 --num-queues=2 --qsize=512 --packed-ring
+	$rpc_py vfu_virtio_create_blk_endpoint virtio.$disk_no --bdev-name Nvme0n1 --num-queues=2 --qsize=512 $ring_opt
 elif [[ "$virtio_type" == "virtio_scsi" ]]; then
-	$rpc_py vfu_virtio_create_scsi_endpoint virtio.$disk_no --num-io-queues=2 --qsize=512 --packed-ring
+	$rpc_py vfu_virtio_create_scsi_endpoint virtio.$disk_no --num-io-queues=2 --qsize=512 $ring_opt
 	$rpc_py vfu_virtio_scsi_add_target virtio.$disk_no --scsi-target-num=0 --bdev-name Nvme0n1
 fi
 
