@@ -261,7 +261,10 @@ concat_submit_null_payload_request(struct raid_bdev_io *raid_io)
 		} else {
 			SPDK_ERRLOG("bdev io submit error not due to ENOMEM, it should not happen\n");
 			assert(false);
-			raid_bdev_io_complete(raid_io, SPDK_BDEV_IO_STATUS_FAILED);
+			raid_bdev_io_complete_part(raid_io,
+						   raid_io->base_bdev_io_remaining -
+						   raid_io->base_bdev_io_submitted,
+						   SPDK_BDEV_IO_STATUS_FAILED);
 			return;
 		}
 	}
