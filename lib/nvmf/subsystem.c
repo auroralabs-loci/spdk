@@ -3248,6 +3248,12 @@ nvmf_ns_reservation_restore(struct spdk_nvmf_ns *ns, struct spdk_nvmf_reservatio
 		return 0;
 	}
 
+	if (info->num_regs > SPDK_NVMF_MAX_NUM_REGISTRANTS) {
+		SPDK_ERRLOG("Can only support up to %u registrants\n",
+			    SPDK_NVMF_MAX_NUM_REGISTRANTS);
+		return -ERANGE;
+	}
+
 	/* Check info->crkey exist or not in info->registrants[i].rkey */
 	for (i = 0; i < info->num_regs; i++) {
 		if (info->crkey == info->registrants[i].rkey) {
@@ -3278,6 +3284,10 @@ nvmf_ns_reservation_restore(struct spdk_nvmf_ns *ns, struct spdk_nvmf_reservatio
 	for (i = 0; i < info->num_regs; i++) {
 		reg = calloc(1, sizeof(*reg));
 		if (!reg) {
+			ns->crkey = 0;
+			ns->rtype = 0;
+			ns->ptpl_activated = 0;
+			nvmf_ns_reservation_clear_all_registrants(ns);
 			return -ENOMEM;
 		}
 		spdk_uuid_parse(&reg->hostid, info->registrants[i].host_uuid);
