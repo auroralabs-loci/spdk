@@ -30,7 +30,14 @@
 /*
  * Maximum number of SGL elements.
  */
-#define NVME_TCP_MAX_SGL_DESCRIPTORS	(16)
+#ifndef SPDK_CONFIG_NVMF_MAX_SGL_ENTRIES
+/* Set this default temporarily, for users that may pull latest code without
+ * re-running configure.
+ */
+#define SPDK_CONFIG_NVMF_MAX_SGL_ENTRIES (16)
+#endif
+
+#define NVME_TCP_MAX_SGL_DESCRIPTORS	SPDK_CONFIG_NVMF_MAX_SGL_ENTRIES
 
 #define MAKE_DIGEST_WORD(BUF, CRC32C) \
         (   ((*((uint8_t *)(BUF)+0)) = (uint8_t)((uint32_t)(CRC32C) >> 0)), \
