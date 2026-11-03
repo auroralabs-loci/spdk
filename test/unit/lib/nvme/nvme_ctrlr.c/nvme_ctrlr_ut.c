@@ -279,11 +279,18 @@ nvme_transport_ctrlr_delete_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_
 	free(qpair);
 }
 
+/* Simulate an admin completion that advances the init state machine. */
+static bool g_disconnect_advance_state;
+
 void
 nvme_transport_ctrlr_disconnect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
 {
 	if (qpair != NULL) {
 		qpair->state = NVME_QPAIR_DISCONNECTED;
+	}
+
+	if (g_disconnect_advance_state) {
+		ctrlr->state = NVME_CTRLR_STATE_IDENTIFY_NS_IOCS_SPECIFIC;
 	}
 }
 
@@ -1904,11 +1911,28 @@ static void
 test_nvme_ctrlr_fail(void)
 {
 	struct spdk_nvme_ctrlr	ctrlr = {};
+	struct spdk_nvme_qpair	adminq = {};
 
 	ctrlr.opts.num_io_queues = 0;
+	ctrlr.adminq = &adminq;
+	ctrlr.state = NVME_CTRLR_STATE_READY;
 	nvme_ctrlr_fail(&ctrlr, false);
 
 	CU_ASSERT(ctrlr.is_failed == true);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_ERROR);
+	CU_ASSERT(adminq.state == NVME_QPAIR_DISCONNECTED);
+
+	/* Identify NSID descriptor abort moves past ERROR inside disconnect. */
+	ctrlr.is_failed = false;
+	ctrlr.state = NVME_CTRLR_STATE_WAIT_FOR_IDENTIFY_ID_DESCS;
+	adminq.state = NVME_QPAIR_ENABLED;
+	g_disconnect_advance_state = true;
+	nvme_ctrlr_fail(&ctrlr, false);
+	g_disconnect_advance_state = false;
+
+	CU_ASSERT(ctrlr.is_failed == true);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_ERROR);
+	CU_ASSERT(adminq.state == NVME_QPAIR_DISCONNECTED);
 }
 
 static void
