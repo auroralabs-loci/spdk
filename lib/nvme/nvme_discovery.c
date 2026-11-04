@@ -154,6 +154,16 @@ discovery_log_header_completion(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 			page_size += numrec * sizeof(struct spdk_nvmf_discovery_log_page_entry);
 		}
 	} else {
+		if (numrec > (UINT32_MAX - sizeof(struct spdk_nvmf_discovery_log_page)) /
+		    sizeof(struct spdk_nvmf_discovery_log_page_entry)) {
+			NVME_CTRLR_ERRLOG(ctx->ctrlr,
+					  "Discovery log numrec %" PRIu64 " exceeds maximum payload size\n",
+					  numrec);
+			ctx->cb_fn(ctx->cb_arg, -EINVAL, NULL, NULL);
+			free(ctx->log_page);
+			free(ctx);
+			return;
+		}
 		page_size = sizeof(struct spdk_nvmf_discovery_log_page);
 		page_size += numrec * sizeof(struct spdk_nvmf_discovery_log_page_entry);
 	}
