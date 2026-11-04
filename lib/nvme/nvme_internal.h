@@ -629,13 +629,14 @@ struct spdk_nvme_ns {
 	uint8_t				active			: 1;
 	uint8_t				identify_pending	: 1;
 	uint8_t				has_uuid		: 1;
+	uint8_t				id_desc_skip		: 1;
 	uint8_t				csi;				/* \ref spdk_nvme_csi */
 	uint8_t				pi_storage_tag_size;
 
 	/* Parsed from Namespace Identification Descriptor List (CNS = 03h). */
 	struct spdk_uuid		uuid;
 
-	uint8_t				reserved60[4];
+	uint8_t				reserved61[3];
 
 	/* I/O Command Set Specific Identify Namespace data. */
 	union {
