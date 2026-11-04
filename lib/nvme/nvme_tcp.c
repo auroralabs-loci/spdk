@@ -11,6 +11,7 @@
 #include "nvme_internal.h"
 
 #include "spdk/endian.h"
+#include "spdk/fd_group.h"
 #include "spdk/likely.h"
 #include "spdk/sock.h"
 #include "spdk/string.h"
@@ -87,8 +88,22 @@ struct nvme_tcp_poll_group {
 struct nvme_tcp_qpair {
 	struct spdk_nvme_qpair			qpair;
 	struct spdk_sock			*sock;
-	/* Owned by this qpair; shared poll-group socket groups are never stored here. */
+	/* Owned by this qpair; shared poll-group socket groups are never stored here.
+	 * In interrupt mode it remains valid across reconnects.
+	 */
 	struct spdk_sock_group			*sock_group;
+	/* Interrupt mode only. Aggregates sock_group's interruptfd and wake_fd so a
+	 * partial send can wake the user even without a poll group.
+	 */
+	struct spdk_fd_group			*fgrp;
+	/* Interrupt mode only. Written to from nvme_tcp_qpair_flush() when a partial
+	 * send needs a retry. Owned by this qpair, or -1.
+	 */
+	int					wake_fd;
+	/* wake_fd was written and not drained yet. Not in flags, which are reset on
+	 * every connect while wake_fd may still be readable.
+	 */
+	bool					wake_pending;
 
 	TAILQ_HEAD(, nvme_tcp_req)		free_reqs;
 	TAILQ_HEAD(, nvme_tcp_req)		outstanding_reqs;
@@ -109,7 +124,9 @@ struct nvme_tcp_qpair {
 		uint16_t host_ddgst_enable: 1;
 		uint16_t icreq_send_ack: 1;
 		uint16_t icresp_received: 1;
-		uint16_t reserved: 12;
+		uint16_t needs_flush: 1;
+		uint16_t intr_mode: 1;
+		uint16_t reserved: 10;
 	} flags;
 
 	/** Specifies the maximum number of PDU-Data bytes per H2C Data Transfer PDU */
@@ -191,6 +208,9 @@ static int64_t nvme_tcp_poll_group_process_completions(struct spdk_nvme_transpor
 		*tgroup, uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
 static struct spdk_sock_group *nvme_tcp_qpair_create_sock_group(struct spdk_nvme_qpair *qpair);
 static int nvme_tcp_qpair_close_sock_group(struct spdk_nvme_qpair *qpair);
+static int nvme_tcp_qpair_flush(struct nvme_tcp_qpair *tqpair);
+static int nvme_tcp_qpair_create_fgrp(struct nvme_tcp_qpair *tqpair);
+static void nvme_tcp_qpair_destroy_fgrp(struct nvme_tcp_qpair *tqpair);
 static void nvme_tcp_icresp_handle(struct nvme_tcp_qpair *tqpair, struct nvme_tcp_pdu *pdu);
 static void nvme_tcp_req_complete(struct nvme_tcp_req *tcp_req, struct nvme_tcp_qpair *tqpair,
 				  struct spdk_nvme_cpl *rsp, bool print_on_error);
@@ -433,7 +453,8 @@ nvme_tcp_qpair_try_disconnect_done(struct spdk_nvme_qpair *qpair)
 	if (nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTING &&
 	    TAILQ_EMPTY(&tqpair->outstanding_reqs)) {
 		/* Socket closure may be deferred until its callback unwinds. */
-		if (nvme_tcp_qpair_close_sock_group(qpair) == 0) {
+		if (qpair->ctrlr->opts.enable_interrupts ||
+		    nvme_tcp_qpair_close_sock_group(qpair) == 0) {
 			nvme_tcp_ctrlr_disconnect_qpair_done(qpair);
 		}
 	}
@@ -494,6 +515,10 @@ nvme_tcp_ctrlr_delete_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_q
 	int rc;
 
 	assert(qpair != NULL);
+	/* Destroy the fd group first, while sock_group is still alive, so we can look up
+	 * and remove its interrupt fd from our fd group before sock_group is destroyed.
+	 */
+	nvme_tcp_qpair_destroy_fgrp(tqpair);
 	/* A deferred socket close may have completed without another qpair poll. */
 	rc = nvme_tcp_qpair_close_sock_group(qpair);
 	if (rc != 0) {
@@ -628,6 +653,14 @@ _tcp_write_pdu(struct nvme_tcp_pdu *pdu)
 	pdu->sock_req.cb_arg = pdu;
 	tqpair->stats->submitted_requests++;
 	spdk_sock_writev_async(tqpair->sock, &pdu->sock_req);
+
+	/* In interrupt mode nothing else flushes queued PDUs. Flush here so every path
+	 * that queues a PDU, including the deferred accel-sequence completion callbacks,
+	 * sends it without waiting for an unrelated wakeup.
+	 */
+	if (tqpair->flags.intr_mode) {
+		nvme_tcp_qpair_flush(tqpair);
+	}
 }
 
 static void
@@ -1170,6 +1203,36 @@ nvme_tcp_qpair_capsule_cmd_send(struct nvme_tcp_qpair *tqpair,
 end:
 	capsule_cmd->common.plen = plen;
 	nvme_tcp_qpair_write_pdu(tqpair, pdu, nvme_tcp_qpair_cmd_send_complete, tcp_req);
+}
+
+/* Flush queued PDUs in interrupt mode. A partial send writes to the qpair's own
+ * wake_fd, which is part of the fd_group returned by nvme_tcp_qpair_get_fd(). The
+ * user wakes up and process_completions() retries the flush. This works both with
+ * and without a poll group, unlike waking only via the poll group's internal fd.
+ */
+static int
+nvme_tcp_qpair_flush(struct nvme_tcp_qpair *tqpair)
+{
+	uint64_t one = 1;
+	ssize_t written;
+	int rc;
+
+	rc = spdk_sock_flush(tqpair->sock);
+	tqpair->flags.needs_flush = rc == -EAGAIN;
+	if (rc != -EAGAIN) {
+		return rc;
+	}
+
+	if (tqpair->wake_fd >= 0 && !tqpair->wake_pending) {
+		written = write(tqpair->wake_fd, &one, sizeof(one));
+		if (spdk_unlikely(written < 0)) {
+			NVME_TQPAIR_ERRLOG(tqpair, "wake fd write failed: %s\n", spdk_strerror(errno));
+		} else {
+			tqpair->wake_pending = true;
+		}
+	}
+
+	return 0;
 }
 
 static int
@@ -2381,9 +2444,35 @@ nvme_tcp_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_c
 {
 	struct nvme_tcp_qpair *tqpair = nvme_tcp_qpair(qpair);
 	uint32_t reaped;
+	uint64_t drain;
 	int rc;
 
-	if (qpair->poll_group != NULL) {
+	/* Drain wake_fd so the fd_group epoll doesn't keep firing. If needs_flush is still
+	 * set after processing below, flush() rearms wake_fd.
+	 */
+	if (tqpair->wake_pending) {
+		if (spdk_unlikely(read(tqpair->wake_fd, &drain, sizeof(drain)) < 0 &&
+				  errno != EAGAIN)) {
+			NVME_TQPAIR_ERRLOG(tqpair, "wake fd read failed: %s\n", spdk_strerror(errno));
+		}
+		tqpair->wake_pending = false;
+	}
+
+	if (tqpair->sock_group != NULL && qpair->ctrlr->opts.enable_interrupts) {
+		/* The per-qpair group drives both socket progress and interrupt-mode
+		 * connections. The group is not shared with other qpairs.
+		 */
+		rc = spdk_sock_group_poll(tqpair->sock_group);
+		if (spdk_unlikely(rc < 0)) {
+			NVME_TQPAIR_ERRLOG(tqpair, "spdk_sock_group_poll() failed, rc %d: %s\n",
+					   rc, spdk_strerror(-rc));
+			goto fail;
+		}
+
+		if (qpair->ctrlr->timeout_enabled) {
+			nvme_tcp_qpair_check_timeout(qpair);
+		}
+	} else if (qpair->poll_group != NULL) {
 		struct nvme_tcp_poll_group *group;
 
 		group = nvme_tcp_poll_group(qpair->poll_group);
@@ -2475,6 +2564,16 @@ nvme_tcp_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_c
 		}
 	}
 
+	/* Retry a partial flush that signaled wake_fd. */
+	if (tqpair->flags.needs_flush && tqpair->sock != NULL) {
+		rc = nvme_tcp_qpair_flush(tqpair);
+		if (spdk_unlikely(rc < 0)) {
+			NVME_TQPAIR_ERRLOG(tqpair, "spdk_sock_flush() failed, rc %d: %s\n", rc,
+					   spdk_strerror(-rc));
+			goto fail;
+		}
+	}
+
 	return reaped;
 fail:
 	if (!qpair->transport_failure_reason) {
@@ -2560,8 +2659,6 @@ nvme_tcp_qpair_create_sock_group(struct spdk_nvme_qpair *qpair)
 		.rx_cb = nvme_tcp_qpair_no_group_sock_cb,
 	};
 
-	assert(qpair->poll_group == NULL);
-
 	/* The group from a previous connect attempt can outlive its socket. Closing the socket
 	 * from inside a socket callback defers the real close, so the socket is still registered
 	 * with the group when nvme_tcp_qpair_close_sock_group() runs and spdk_sock_group_close()
@@ -2592,6 +2689,104 @@ nvme_tcp_qpair_close_sock_group(struct spdk_nvme_qpair *qpair)
 				   rc, spdk_strerror(-rc));
 	}
 	return rc;
+}
+
+/* The wake_fd and sock interruptfd handlers only exist to let spdk_fd_group's epoll
+ * fd signal readiness; nvme_tcp_qpair_process_completions() does the real work.
+ */
+static int
+nvme_tcp_qpair_fd_noop(void *ctx)
+{
+	return 0;
+}
+
+static int
+nvme_tcp_qpair_create_fgrp(struct nvme_tcp_qpair *tqpair)
+{
+	int sock_fd, rc;
+
+	assert(tqpair->sock_group != NULL);
+
+	sock_fd = spdk_sock_group_get_interruptfd(tqpair->sock_group);
+	if (sock_fd < 0) {
+		/* No interrupt fd (e.g. uring); the sock-impl check in connect_sock rejects it,
+		 * so we should never get here with interrupts enabled.
+		 */
+		NVME_TQPAIR_ERRLOG(tqpair, "sock group has no interrupt fd\n");
+		return -ENOTSUP;
+	}
+
+	rc = spdk_fd_group_create(&tqpair->fgrp);
+	if (rc != 0) {
+		NVME_TQPAIR_ERRLOG(tqpair, "spdk_fd_group_create() failed, rc %d: %s\n",
+				   rc, spdk_strerror(-rc));
+		return rc;
+	}
+
+	rc = SPDK_FD_GROUP_ADD(tqpair->fgrp, sock_fd, nvme_tcp_qpair_fd_noop, tqpair);
+	if (rc != 0) {
+		NVME_TQPAIR_ERRLOG(tqpair, "cannot add sock interrupt fd %d: %s\n", sock_fd,
+				   spdk_strerror(-rc));
+		goto err_destroy;
+	}
+
+#ifdef __linux__
+	tqpair->wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	rc = tqpair->wake_fd < 0 ? -errno : 0;
+#else
+	/* Not reached in practice: spdk_fd_group_create() fails on non-Linux. */
+	tqpair->wake_fd = -1;
+	rc = -ENOTSUP;
+#endif
+	if (tqpair->wake_fd < 0) {
+		NVME_TQPAIR_ERRLOG(tqpair, "eventfd() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
+		goto err_remove_sock;
+	}
+
+	rc = SPDK_FD_GROUP_ADD(tqpair->fgrp, tqpair->wake_fd, nvme_tcp_qpair_fd_noop, tqpair);
+	if (rc != 0) {
+		NVME_TQPAIR_ERRLOG(tqpair, "cannot add wake fd %d: %s\n", tqpair->wake_fd,
+				   spdk_strerror(-rc));
+		goto err_close;
+	}
+
+	return 0;
+err_close:
+	close(tqpair->wake_fd);
+	tqpair->wake_fd = -1;
+err_remove_sock:
+	spdk_fd_group_remove(tqpair->fgrp, sock_fd);
+err_destroy:
+	spdk_fd_group_destroy(tqpair->fgrp);
+	tqpair->fgrp = NULL;
+	return rc;
+}
+
+static void
+nvme_tcp_qpair_destroy_fgrp(struct nvme_tcp_qpair *tqpair)
+{
+	int sock_fd;
+
+	if (tqpair->fgrp == NULL) {
+		assert(tqpair->wake_fd < 0);
+		return;
+	}
+
+	if (tqpair->sock_group != NULL) {
+		sock_fd = spdk_sock_group_get_interruptfd(tqpair->sock_group);
+		if (sock_fd >= 0) {
+			spdk_fd_group_remove(tqpair->fgrp, sock_fd);
+		}
+	}
+	if (tqpair->wake_fd >= 0) {
+		spdk_fd_group_remove(tqpair->fgrp, tqpair->wake_fd);
+		close(tqpair->wake_fd);
+		tqpair->wake_fd = -1;
+		tqpair->wake_pending = false;
+	}
+
+	spdk_fd_group_destroy(tqpair->fgrp);
+	tqpair->fgrp = NULL;
 }
 
 static int
@@ -2648,7 +2843,12 @@ nvme_tcp_qpair_connect_sock(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpai
 		}
 	}
 
-	if (qpair->poll_group) {
+	if (ctrlr->opts.enable_interrupts) {
+		/* Interrupt mode needs a qpair-owned group so its fd remains stable across
+		 * reconnects, including for qpairs that belong to a poll group.
+		 */
+		sock_group = nvme_tcp_qpair_create_sock_group(qpair);
+	} else if (qpair->poll_group) {
 		sock_group = nvme_tcp_poll_group(qpair->poll_group)->sock_group;
 	} else {
 		sock_group = nvme_tcp_qpair_create_sock_group(qpair);
@@ -2662,6 +2862,22 @@ nvme_tcp_qpair_connect_sock(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpai
 	tcp_ctrlr = SPDK_CONTAINEROF(ctrlr, struct nvme_tcp_ctrlr, ctrlr);
 	sock_impl_name = tcp_ctrlr->psk[0] ? "ssl" : NULL;
 	NVME_TQPAIR_DEBUGLOG(tqpair, "sock_impl_name is %s\n", sock_impl_name);
+
+	if (ctrlr->opts.enable_interrupts) {
+		const char *impl_name = sock_impl_name;
+
+		if (impl_name == NULL) {
+			impl_name = spdk_sock_get_default_impl();
+		}
+
+		/* Only implementations with an interrupt fd can wake the reactor. */
+		if (impl_name != NULL && strcmp(impl_name, "posix") != 0 &&
+		    strcmp(impl_name, "ssl") != 0) {
+			NVME_TQPAIR_ERRLOG(tqpair, "Interrupt mode doesn't support sock impl %s\n",
+					   impl_name);
+			return -ENOTSUP;
+		}
+	}
 
 	if (sock_impl_name) {
 		spdk_sock_impl_get_opts(sock_impl_name, &impl_opts, &impl_opts_size);
@@ -2697,7 +2913,9 @@ nvme_tcp_qpair_connect_sock(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpai
 	if (!tqpair->sock) {
 		NVME_TQPAIR_ERRLOG(tqpair, "sock connection error with addr=%s, port=%ld\n", ctrlr->trid.traddr,
 				   port);
-		nvme_tcp_qpair_close_sock_group(qpair);
+		if (!ctrlr->opts.enable_interrupts) {
+			nvme_tcp_qpair_close_sock_group(qpair);
+		}
 		rc = -1;
 		return rc;
 	}
@@ -2791,6 +3009,7 @@ nvme_tcp_ctrlr_connect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpa
 
 	tqpair = nvme_tcp_qpair(qpair);
 	memset(&tqpair->flags, 0, sizeof(tqpair->flags));
+	tqpair->flags.intr_mode = ctrlr->opts.enable_interrupts;
 
 	if (qpair->poll_group) {
 		tgroup = nvme_tcp_poll_group(qpair->poll_group);
@@ -2854,6 +3073,7 @@ nvme_tcp_ctrlr_create_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		NVME_CTRLR_ERRLOG(ctrlr, "failed to get create tqpair\n");
 		return NULL;
 	}
+	tqpair->wake_fd = -1;
 
 	/* Set num_entries one less than queue size. According to NVMe
 	 * and NVMe-oF specs we can not submit queue size requests,
@@ -2871,6 +3091,18 @@ nvme_tcp_ctrlr_create_qpair(struct spdk_nvme_ctrlr *ctrlr,
 	if (rc) {
 		nvme_tcp_ctrlr_delete_io_qpair(ctrlr, qpair);
 		return NULL;
+	}
+
+	if (ctrlr->opts.enable_interrupts) {
+		if (nvme_tcp_qpair_create_sock_group(qpair) == NULL) {
+			NVME_TQPAIR_ERRLOG(tqpair, "spdk_sock_group_create() failed\n");
+			nvme_tcp_ctrlr_delete_io_qpair(ctrlr, qpair);
+			return NULL;
+		}
+		if (nvme_tcp_qpair_create_fgrp(tqpair) != 0) {
+			nvme_tcp_ctrlr_delete_io_qpair(ctrlr, qpair);
+			return NULL;
+		}
 	}
 
 	return qpair;
@@ -3144,13 +3376,32 @@ nvme_tcp_poll_group_process_completions(struct spdk_nvme_transport_poll_group *t
 	num_completions = 0;
 	group->stats.polls++;
 
-	num_events = spdk_sock_group_poll(group->sock_group);
-	if (num_events >= 0) {
-		group->stats.idle_polls += !num_events;
-		group->stats.socket_completions += num_events;
+	if (tgroup->group->enable_interrupts) {
+		/* Interrupt-mode qpairs use private groups so their fds remain stable
+		 * across reconnects. The shared poll-group socket group is empty.
+		 */
+		STAILQ_FOREACH_SAFE(qpair, &tgroup->connected_qpairs, poll_group_stailq, tmp_qpair) {
+			rc = spdk_nvme_qpair_process_completions(qpair, completions_per_qpair);
+			if (spdk_unlikely(rc < 0)) {
+				num_completions = -ENXIO;
+				continue;
+			}
+
+			if (spdk_likely(num_completions >= 0)) {
+				num_completions += rc;
+			}
+			group->stats.nvme_completions += rc;
+		}
 	} else {
-		SPDK_ERRLOG("spdk_sock_group_poll() failed, rc %d: %s\n", num_events, spdk_strerror(-num_events));
-		num_completions = num_events;
+		num_events = spdk_sock_group_poll(group->sock_group);
+		if (num_events >= 0) {
+			group->stats.idle_polls += !num_events;
+			group->stats.socket_completions += num_events;
+		} else {
+			SPDK_ERRLOG("spdk_sock_group_poll() failed, rc %d: %s\n", num_events,
+				    spdk_strerror(-num_events));
+			num_completions = num_events;
+		}
 	}
 
 	STAILQ_FOREACH_SAFE(qpair, &tgroup->disconnected_qpairs, poll_group_stailq, tmp_qpair) {
@@ -3261,6 +3512,34 @@ nvme_tcp_ctrlr_get_memory_domains(const struct spdk_nvme_ctrlr *ctrlr,
 	return 1;
 }
 
+static int
+nvme_tcp_qpair_get_fd(struct spdk_nvme_qpair *qpair, struct spdk_event_handler_opts *opts)
+{
+	struct nvme_tcp_qpair *tqpair = nvme_tcp_qpair(qpair);
+
+	if (tqpair->fgrp == NULL) {
+		return -1;
+	}
+
+	if (opts != NULL) {
+		if (!SPDK_FIELD_VALID(opts, fd_type, opts->opts_size)) {
+			return -EINVAL;
+		}
+
+		spdk_fd_group_get_default_event_handler_opts(opts, opts->opts_size);
+		opts->fd_type = SPDK_FD_TYPE_DEFAULT;
+	}
+
+	return spdk_fd_group_get_fd(tqpair->fgrp);
+}
+
+static int
+nvme_tcp_ctrlr_enable_interrupts(struct spdk_nvme_ctrlr *ctrlr)
+{
+	(void)ctrlr;
+	return 0;
+}
+
 const struct spdk_nvme_transport_ops tcp_ops = {
 	.name = "TCP",
 	.type = SPDK_NVME_TRANSPORT_TCP,
@@ -3268,6 +3547,7 @@ const struct spdk_nvme_transport_ops tcp_ops = {
 	.ctrlr_scan = nvme_fabric_ctrlr_scan,
 	.ctrlr_destruct = nvme_tcp_ctrlr_destruct,
 	.ctrlr_enable = nvme_tcp_ctrlr_enable,
+	.ctrlr_enable_interrupts = nvme_tcp_ctrlr_enable_interrupts,
 
 	.ctrlr_set_reg_4 = nvme_fabric_ctrlr_set_reg_4,
 	.ctrlr_set_reg_8 = nvme_fabric_ctrlr_set_reg_8,
@@ -3293,6 +3573,7 @@ const struct spdk_nvme_transport_ops tcp_ops = {
 	.qpair_submit_request = nvme_tcp_qpair_submit_request,
 	.qpair_process_completions = nvme_tcp_qpair_process_completions,
 	.qpair_iterate_requests = nvme_tcp_qpair_iterate_requests,
+	.qpair_get_fd = nvme_tcp_qpair_get_fd,
 	.qpair_authenticate = nvme_tcp_qpair_authenticate,
 	.admin_qpair_abort_aers = nvme_tcp_admin_qpair_abort_aers,
 
